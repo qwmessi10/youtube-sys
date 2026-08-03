@@ -1,0 +1,21 @@
+{
+  "name": "youtube-sys-frontend",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 0.0.0.0",
+    "build": "vite",
+    "preview": "vite preview --host 0.0.0.0"
+  },
+  "dependencies": {
+    "axios": "^1.7.9",
+    "element-plus": "^2.8.8",
+    "vue": "^3.5.13"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "^5.2.1",
+    "vite": "^6.0.5"
+  }
+}
+

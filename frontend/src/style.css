@@ -1,0 +1,31 @@
+:root { font-family: Inter, "Microsoft YaHei", sans-serif; color: #18202a; background: #f4f6f8; }
+* { box-sizing: border-box; }
+body { margin: 0; min-width: 1100px; }
+.shell { min-height: 100vh; }
+.sidebar { background: #17212d; color: #d9e2ec; }
+.brand { height: 86px; display: flex; align-items: center; gap: 12px; padding: 18px 22px; color: white; font-weight: 700; font-size: 17px; }
+.brand span { display: grid; place-items: center; width: 36px; height: 36px; border-radius: 10px; background: #e33a4b; font-size: 13px; }
+.brand small { display: block; margin-top: 4px; color: #8da2b7; font-size: 11px; font-weight: 400; }
+.menu { border: 0; background: transparent; }
+.menu .el-menu-item { color: #b6c5d4; }
+.menu .el-menu-item.is-active { background: #263647; color: white; border-right: 3px solid #4d9cf8; }
+.header { display: flex; align-items: center; justify-content: space-between; background: white; border-bottom: 1px solid #e7eaee; font-size: 18px; }
+.header span, .hint, small { color: #718096; font-size: 13px; }
+.el-main { padding: 26px; }
+.create-card { margin-bottom: 20px; }
+.table-card { margin-bottom: 20px; }
+.table-card .el-card__header { padding: 14px 20px; }
+.card-title { display: flex; align-items: center; justify-content: space-between; }
+.card-title .el-select { width: 230px; margin-right: 8px; }
+.card-title .el-button { margin-left: 8px; }
+.search-input { width: 210px; vertical-align: middle; }
+.pagination { justify-content: flex-end; margin-top: 18px; }
+.process-note { margin-bottom: 14px; }
+.run-filter-tag { margin-left: 12px; vertical-align: middle; }
+.video-details { padding: 8px 18px 18px; background: #f8fafc; }
+.score-summary { margin-bottom: 12px; }
+.score-summary strong { margin-right: 12px; }
+.video-details a { color: #2468c5; text-decoration: none; }
+.score { display: inline-block; margin: 2px 7px 2px 0; padding: 2px 6px; border-radius: 4px; background: #eef3f8; color: #52606d; font-size: 12px; }
+.settings-form { max-width: 820px; }
+.settings-form small { display: block; margin-top: 5px; }

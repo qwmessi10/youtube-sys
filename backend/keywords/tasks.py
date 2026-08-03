@@ -18,8 +18,11 @@ def process_keyword_run(self, run_id, task_token):
     run.error_message = ""
     run.save(update_fields=["error_message", "updated_at"])
     try:
-        suggestions = suggest_keywords(run.root_keyword, run.country, run.language)[:run.max_keywords]
-        for keyword in suggestions:
+        suggestions = suggest_keywords(run.root_keyword, run.country, run.language)
+        # 把输入词本身也纳入评分：即使 Suggest 拓展不出长尾词（如输入词已经很长很具体），
+        # 至少也能评估输入词本身。放在最前面并去重，再按 max_keywords 截断（输入词计入总数上限）。
+        keywords_to_process = list(dict.fromkeys([run.root_keyword, *suggestions]))[:run.max_keywords]
+        for keyword in keywords_to_process:
             if not _can_continue(run_id, task_token):
                 return
             result, _ = KeywordResult.objects.get_or_create(run=run, keyword=keyword)

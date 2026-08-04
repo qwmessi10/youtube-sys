@@ -44,6 +44,8 @@ class KeywordRun(models.Model):
     status = models.CharField(max_length=16, choices=STATUS_CHOICES, default=STATUS_PENDING)
     task_token = models.UUIDField(default=uuid.uuid4, editable=False)
     error_message = models.TextField(blank=True)
+    # 任务级工作日志：Suggest 拓展的全部词、AI 输入/输出等，供前端「查看日志」抽屉展示。
+    run_log = models.JSONField(default=dict, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

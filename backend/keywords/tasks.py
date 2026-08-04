@@ -75,6 +75,17 @@ def process_keyword_run(self, run_id, task_token):
         # 输入词本身也纳入评分：即使 Suggest 拓展不出长尾词，也能评估输入词本身。
         all_keywords = list(dict.fromkeys([run.root_keyword, *suggestions]))
 
+        # 记录 Suggest 工作日志（拓展的全部词）。
+        log = dict(run.run_log or {})
+        log["suggest"] = {
+            "root_keyword": run.root_keyword,
+            "suggested": list(suggestions),
+            "all_keywords": all_keywords,
+            "count": len(all_keywords),
+        }
+        run.run_log = log
+        run.save(update_fields=["run_log", "updated_at"])
+
         if is_v2:
             # 2.0：先用 AI 批量筛选博彩意向，只有高意向词才进入打分。
             keywords_to_process, intents = _apply_betting_filter(run, all_keywords, run_id, task_token)
@@ -120,9 +131,17 @@ def _apply_betting_filter(run, all_keywords, run_id, task_token):
     """
     if not _can_continue(run_id, task_token):
         return None, None
-    intents = filter_betting_intent(all_keywords)
+    intents, ai_log = filter_betting_intent(all_keywords)
     hit = [kw for kw in all_keywords if kw in intents][:run.max_keywords]
     hit_set = set(hit)
+
+    # 把 AI 完整输入输出写进任务日志，供「查看日志」抽屉展示与提示词调试。
+    log = dict(run.run_log or {})
+    ai_log["hit_keywords"] = list(hit)
+    ai_log["eliminated_keywords"] = [kw for kw in all_keywords if kw not in hit_set]
+    log["agent"] = ai_log
+    run.run_log = log
+    run.save(update_fields=["run_log", "updated_at"])
 
     # 未命中意向的词批量记录淘汰，方便复盘为什么被筛掉。
     for keyword in all_keywords:

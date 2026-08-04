@@ -18,6 +18,10 @@ const resultPage = ref(1);
 const runTotal = ref(0);
 const resultTotal = ref(0);
 const form = ref({ root_keyword: "", country: "US", language: "en", max_keywords: 15, scoring_model: "2.0" });
+const logDrawer = ref(false);
+const logLoading = ref(false);
+const logData = ref(null);
+const logRun = ref(null);
 
 const scoreLabels = {
   title_mismatch: "标题未完全匹配",
@@ -118,6 +122,21 @@ function selectRun(run) {
   loadResults(1);
 }
 
+async function openLog(run) {
+  logRun.value = run;
+  logDrawer.value = true;
+  logLoading.value = true;
+  logData.value = null;
+  try {
+    const { data } = await axios.get(`/api/keyword-runs/${run.id}/log/`);
+    logData.value = data;
+  } catch {
+    ElMessage.error("加载日志失败");
+  } finally {
+    logLoading.value = false;
+  }
+}
+
 function clearRunFilter() {
   selectedRun.value = undefined;
   selectedRunLabel.value = "";
@@ -175,10 +194,11 @@ onMounted(async () => {
               <el-table-column prop="status" label="状态" width="110" />
               <el-table-column prop="result_count" label="已处理" width="90" />
               <el-table-column label="更新时间" min-width="170"><template #default="{ row }">{{ datetime(row.updated_at) }}</template></el-table-column>
-              <el-table-column label="控制" width="210"><template #default="{ row }">
+              <el-table-column label="控制" width="280"><template #default="{ row }">
                 <el-button size="small" :disabled="!['pending', 'running'].includes(row.status)" @click.stop="controlRun(row, 'pause')">暂停</el-button>
                 <el-button size="small" type="primary" plain :disabled="!['paused', 'stopped', 'failed'].includes(row.status)" @click.stop="controlRun(row, 'restart')">重启</el-button>
                 <el-button size="small" type="danger" plain :disabled="!['pending', 'running', 'paused'].includes(row.status)" @click.stop="controlRun(row, 'stop')">停止</el-button>
+                <el-button size="small" type="info" plain @click.stop="openLog(row)">日志</el-button>
               </template></el-table-column>
             </el-table>
             <el-pagination v-model:current-page="runPage" class="pagination" layout="total, prev, pager, next" :page-size="10" :total="runTotal" @current-change="loadRuns" />
@@ -210,5 +230,68 @@ onMounted(async () => {
         <el-empty v-else description="该模块将在后续需求确认后开发" />
       </el-main>
     </el-container>
+
+    <el-drawer v-model="logDrawer" title="工作日志" size="640px" :destroy-on-close="true">
+      <div v-loading="logLoading">
+        <template v-if="logData">
+          <div class="log-head">
+            <el-tag>{{ logData.scoring_model === '2.0' ? '打分模型 2.0' : '打分模型 1.0' }}</el-tag>
+            <span class="log-root">根词：{{ logData.root_keyword }}</span>
+          </div>
+
+          <el-divider content-position="left">Suggest 拓展词</el-divider>
+          <template v-if="logData.run_log && logData.run_log.suggest">
+            <p class="log-line">拓展词总数：{{ logData.run_log.suggest.count }}</p>
+            <div class="log-tags">
+              <el-tag
+                v-for="kw in (logData.run_log.suggest.all_keywords || [])"
+                :key="kw"
+                size="small"
+                class="log-tag"
+                type="info"
+              >{{ kw }}</el-tag>
+            </div>
+          </template>
+          <el-empty v-else description="无 Suggest 日志" :image-size="60" />
+
+          <template v-if="logData.run_log && logData.run_log.agent">
+            <el-divider content-position="left">Agent 博彩意图判定</el-divider>
+            <p class="log-line">模型：{{ logData.run_log.agent.model }}</p>
+            <p class="log-line">命中高意向词（{{ (logData.run_log.agent.hit_keywords || []).length }}）：</p>
+            <div class="log-tags">
+              <el-tag
+                v-for="kw in (logData.run_log.agent.hit_keywords || [])"
+                :key="kw"
+                size="small"
+                class="log-tag"
+                type="success"
+              >{{ kw }}</el-tag>
+            </div>
+            <p class="log-line">淘汰词（{{ (logData.run_log.agent.eliminated_keywords || []).length }}）：</p>
+            <div class="log-tags">
+              <el-tag
+                v-for="kw in (logData.run_log.agent.eliminated_keywords || [])"
+                :key="kw"
+                size="small"
+                class="log-tag"
+                type="danger"
+              >{{ kw }}</el-tag>
+            </div>
+            <el-collapse class="log-collapse">
+              <el-collapse-item title="Agent 输入 Prompt" name="prompt">
+                <pre class="log-pre">{{ logData.run_log.agent.prompt }}</pre>
+              </el-collapse-item>
+              <el-collapse-item title="Agent 原始输出" name="raw">
+                <pre class="log-pre">{{ logData.run_log.agent.raw_output }}</pre>
+              </el-collapse-item>
+              <el-collapse-item title="解析后结构" name="parsed">
+                <pre class="log-pre">{{ JSON.stringify(logData.run_log.agent.parsed, null, 2) }}</pre>
+              </el-collapse-item>
+            </el-collapse>
+          </template>
+        </template>
+        <el-empty v-else-if="!logLoading" description="暂无日志数据" />
+      </div>
+    </el-drawer>
   </el-container>
 </template>

@@ -119,6 +119,16 @@ class KeywordRunViewSet(mixins.ListModelMixin, mixins.CreateModelMixin, mixins.R
         self._queue_restart(run)
         return Response(self.get_serializer(run).data)
 
+    @action(detail=True, methods=["get"])
+    def log(self, request, pk=None):
+        """返回任务的工作日志（Suggest 全部词、AI 输入/输出）。单独端点，避免列表接口拖大字段。"""
+        run = self.get_object()
+        return Response({
+            "scoring_model": run.scoring_model,
+            "root_keyword": run.root_keyword,
+            "run_log": run.run_log or {},
+        })
+
 
 class KeywordResultViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewsets.GenericViewSet):
     serializer_class = KeywordResultSerializer

@@ -269,8 +269,14 @@ def _call_ai_stream(messages):
     response.raise_for_status()
 
     chunks = []
-    for line in response.iter_lines(decode_unicode=True):
-        if not line or not line.startswith("data:"):
+    # 注意：不能用 iter_lines(decode_unicode=True)，因为响应头常缺 charset，
+    # requests 会默认用 ISO-8859-1 解码，导致 UTF-8 中文变成乱码（mojibake）。
+    # 这里按原始字节切行，统一用 UTF-8 解码。
+    for raw_line in response.iter_lines(decode_unicode=False):
+        if not raw_line:
+            continue
+        line = raw_line.decode("utf-8", errors="replace")
+        if not line.startswith("data:"):
             continue
         payload = line[len("data:"):].strip()
         if payload == "[DONE]":
@@ -304,15 +310,17 @@ def _extract_json(text):
 def filter_betting_intent(keywords):
     """
     批量把长尾词交给 AI，判断博彩意向。
-    返回 dict：{关键词: {"intent": "...", "reason": "..."}}，只含 AI 判定有意向的词。
+    返回 (intents, log)：
+      - intents：{关键词: {"intent": "...", "reason": "..."}}，只含 AI 判定有意向的词。
+      - log：本次 AI 调用的完整工作日志（模型、提示词、原始返回、解析结果），供任务日志展示。
     """
     if not keywords:
-        return {}
+        return {}, {}
     prompt = get_setting("AI_BETTING_INTENT_PROMPT") or DEFAULT_BETTING_INTENT_PROMPT
     keyword_list = "\n".join(f"- {kw}" for kw in keywords)
-    prompt = prompt.replace("[input]", keyword_list).replace("[output]", BETTING_INTENT_OUTPUT_SPEC)
+    full_prompt = prompt.replace("[input]", keyword_list).replace("[output]", BETTING_INTENT_OUTPUT_SPEC)
 
-    raw = _call_ai_stream([{"role": "user", "content": prompt}])
+    raw = _call_ai_stream([{"role": "user", "content": full_prompt}])
     data = _extract_json(raw)
 
     result = {}
@@ -320,4 +328,12 @@ def filter_betting_intent(keywords):
         kw = (item.get("keyword") or "").strip()
         if kw:
             result[kw] = {"intent": item.get("intent", ""), "reason": item.get("reason", "")}
-    return result
+
+    log = {
+        "model": get_setting("AI_MODEL", "gemini-3.6-flash-medium"),
+        "input_keywords": list(keywords),
+        "prompt": full_prompt,
+        "raw_output": raw,
+        "parsed": data,
+    }
+    return result, log

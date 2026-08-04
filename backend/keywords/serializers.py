@@ -26,7 +26,7 @@ class KeywordRunSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = KeywordRun
-        fields = ["id", "root_keyword", "country", "language", "max_keywords", "status", "error_message", "result_count", "created_at", "updated_at"]
+        fields = ["id", "root_keyword", "country", "language", "max_keywords", "scoring_model", "status", "error_message", "result_count", "created_at", "updated_at"]
 
     def validate_country(self, value):
         if value not in dict(COUNTRIES):
@@ -38,10 +38,15 @@ class KeywordRunSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError("请选择列表中的语言。")
         return value
 
+    def validate_scoring_model(self, value):
+        if value not in dict(KeywordRun.SCORING_MODEL_CHOICES):
+            raise serializers.ValidationError("请选择有效的打分模型。")
+        return value
+
 
 class KeywordResultSerializer(serializers.ModelSerializer):
     root_keyword = serializers.CharField(source="run.root_keyword", read_only=True)
 
     class Meta:
         model = KeywordResult
-        fields = ["id", "run", "root_keyword", "keyword", "status", "elimination_stage", "elimination_reason", "serpapi_status", "top5_video_data", "score_breakdown", "rule_score", "final_decision", "created_at", "updated_at"]
+        fields = ["id", "run", "root_keyword", "keyword", "status", "elimination_stage", "elimination_reason", "serpapi_status", "top5_video_data", "score_breakdown", "rule_score", "agent_result", "final_decision", "created_at", "updated_at"]

@@ -1,3 +1,4 @@
+import json
 import os
 import re
 import time
@@ -7,6 +8,24 @@ import requests
 from django.utils import timezone
 
 from .models import GlobalSetting
+
+# 2.0 博彩意图筛选的默认提示词（可在全局设置 AI_BETTING_INTENT_PROMPT 覆盖）。
+DEFAULT_BETTING_INTENT_PROMPT = """# 角色
+你是一个YouTube专业的关键词分析与体育、娱乐游戏运营，有10年的运营经验
+
+# 目标
+通过批量获取到的搜索词，判断搜索词是否有博彩意向；如果有博彩意向，则以json格式全部输出
+
+# 输入
+[input]
+
+# 输出
+[output]"""
+
+# 要求 AI 固定输出的 JSON 结构说明，拼到提示词的 [output] 处。
+BETTING_INTENT_OUTPUT_SPEC = """严格只输出一个 JSON 对象，不要输出任何解释文字或 markdown 代码块标记，格式如下：
+{"betting_keywords": [{"keyword": "原样的搜索词", "intent": "high 或 medium", "reason": "判定理由"}]}
+只包含有博彩意向的词；没有任何有意向的词时输出 {"betting_keywords": []}。"""
 
 # worker 进程内记录上一次 SerpApi 请求的时间戳，用于按 QPS 节流（第一版单 worker 串行处理够用）。
 _last_serpapi_request_at = 0.0
@@ -80,21 +99,39 @@ def suggest_keywords(root_keyword, country, language):
     return list(dict.fromkeys(item for item in suggestions if isinstance(item, str) and item.strip()))
 
 
-def search_youtube(keyword, country, language):
+def search_youtube(keyword, country, language, limit=5):
+    """
+    调用 SerpApi 搜索 YouTube。
+    - limit=5：1.0 只取前 5 条。
+    - limit=None：2.0 取返回的全部视频。
+    """
     api_key = get_setting("SERPAPI_API_KEY")
     if not api_key:
         raise RuntimeError("未配置 SERPAPI_API_KEY")
-    response = _request_with_retry(
-        "GET",
-        "https://serpapi.com/search.json",
-        throttle=True,
-        params={"engine": "youtube", "search_query": keyword, "num": 5, "gl": country, "hl": language, "api_key": api_key},
-        timeout=30,
-    )
+    params = {"engine": "youtube", "search_query": keyword, "gl": country, "hl": language, "api_key": api_key}
+    if limit:
+        params["num"] = limit
+    response = _request_with_retry("GET", "https://serpapi.com/search.json", throttle=True, params=params, timeout=30)
     data = response.json()
     if data.get("error"):
         raise RuntimeError(data["error"])
-    return (data.get("video_results") or [])[:5]
+    videos = data.get("video_results") or []
+    return videos[:limit] if limit else videos
+
+
+def _fetch_v3_items(resource, part, ids, youtube_key):
+    """分批调用 YouTube Data API V3（每批最多 50 个 ID），返回合并后的 items 列表。"""
+    items = []
+    for i in range(0, len(ids), 50):
+        batch = ids[i:i + 50]
+        response = _request_with_retry(
+            "GET",
+            f"https://www.googleapis.com/youtube/v3/{resource}",
+            params={"part": part, "id": ",".join(batch), "key": youtube_key},
+            timeout=30,
+        )
+        items.extend(response.json().get("items", []))
+    return items
 
 
 def enrich_videos(serp_videos):
@@ -113,25 +150,14 @@ def enrich_videos(serp_videos):
     if not youtube_key:
         enrich_ok = False  # 没有 V3 Key，订阅/播放/时间都拿不到，后续标记人工复核。
     elif video_ids:
-        video_response = _request_with_retry(
-            "GET",
-            "https://www.googleapis.com/youtube/v3/videos",
-            params={"part": "snippet,statistics", "id": ",".join(video_ids), "key": youtube_key},
-            timeout=30,
-        )
-        for item in video_response.json().get("items", []):
+        # V3 的 videos.list / channels.list 单次最多 50 个 ID，超过需分批（2.0 会传全量视频）。
+        for item in _fetch_v3_items("videos", "snippet,statistics", video_ids, youtube_key):
             details_by_id[item["id"]] = item
         channel_ids = list({item["snippet"]["channelId"] for item in details_by_id.values() if item.get("snippet", {}).get("channelId")})
         if channel_ids:
-            channel_response = _request_with_retry(
-                "GET",
-                "https://www.googleapis.com/youtube/v3/channels",
-                params={"part": "statistics", "id": ",".join(channel_ids), "key": youtube_key},
-                timeout=30,
-            )
             channel_subscribers = {
                 item["id"]: int(item.get("statistics", {}).get("subscriberCount", 0))
-                for item in channel_response.json().get("items", [])
+                for item in _fetch_v3_items("channels", "statistics", channel_ids, youtube_key)
             }
 
     normalized = []
@@ -168,28 +194,130 @@ def _normalized_text(value):
     return re.sub(r"[^\w]+", " ", (value or "").lower()).strip()
 
 
-def calculate_score(keyword, videos):
-    """Each dimension is 0-5. A higher score indicates a greater potential content gap."""
-    target = _normalized_text(keyword)
-    title_score = sum(target not in _normalized_text(video.get("title")) for video in videos)
-    low_subscriber_score = sum(
-        video.get("subscriber_count") is not None and video["subscriber_count"] < 2000 for video in videos
-    )
-    low_view_score = sum(video.get("view_count") is not None and video["view_count"] < 5000 for video in videos)
+def _count_published_over_24h(videos):
+    """统计发布时间超过 24 小时的视频数量。"""
     cutoff = timezone.now() - timedelta(hours=24)
-    old_video_score = 0
+    count = 0
     for video in videos:
         published_at = video.get("published_at")
         if published_at:
             try:
                 if datetime.fromisoformat(published_at.replace("Z", "+00:00")) < cutoff:
-                    old_video_score += 1
+                    count += 1
             except ValueError:
                 pass
+    return count
+
+
+def _count_title_mismatch(keyword, videos):
+    """统计标题未完全包含关键词的视频数量。"""
+    target = _normalized_text(keyword)
+    return sum(target not in _normalized_text(video.get("title")) for video in videos)
+
+
+def calculate_score(keyword, videos):
+    """1.0 打分：全部维度都看前 5 条视频，每维 0-5，分越高潜在内容空位越大。"""
     breakdown = {
-        "title_mismatch": title_score,
-        "low_subscriber": low_subscriber_score,
-        "low_view": low_view_score,
-        "published_over_24h": old_video_score,
+        "title_mismatch": _count_title_mismatch(keyword, videos),
+        "low_subscriber": sum(
+            v.get("subscriber_count") is not None and v["subscriber_count"] < 2000 for v in videos
+        ),
+        "low_view": sum(v.get("view_count") is not None and v["view_count"] < 5000 for v in videos),
+        "published_over_24h": _count_published_over_24h(videos),
     }
     return sum(breakdown.values()), breakdown
+
+
+def calculate_score_v2(keyword, videos):
+    """
+    2.0 打分：分维度看不同范围的视频。videos 传入的是 SerpApi 返回的全部视频。
+    - 播放量：只看前 5 条，< 500 每个 +1。
+    - 频道订阅：看全部视频，< 1000 每个 +1。
+    - 标题匹配：看全部视频，未完全包含关键词每个 +1。
+    - 发布时间：只看前 5 条，> 24h 每个 +1。
+    """
+    top5 = videos[:5]
+    breakdown = {
+        "title_mismatch": _count_title_mismatch(keyword, videos),
+        "low_subscriber": sum(
+            v.get("subscriber_count") is not None and v["subscriber_count"] < 1000 for v in videos
+        ),
+        "low_view": sum(v.get("view_count") is not None and v["view_count"] < 500 for v in top5),
+        "published_over_24h": _count_published_over_24h(top5),
+    }
+    return sum(breakdown.values()), breakdown
+
+
+def _call_ai_stream(messages):
+    """
+    调用 moretokens（OpenAI 兼容）聊天接口。该平台强制 stream:true（见需求 7.5），
+    这里按 SSE 逐行解析，拼接 choices[0].delta.content，返回完整文本。
+    """
+    base_url = get_setting("AI_BASE_URL", "https://moretokens.ai/v1").rstrip("/")
+    api_key = get_setting("AI_API_KEY")
+    model = get_setting("AI_MODEL", "gemini-3.6-flash-medium")
+    if not api_key:
+        raise RuntimeError("未配置 AI_API_KEY")
+
+    response = requests.post(
+        f"{base_url}/chat/completions",
+        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+        json={"model": model, "stream": True, "messages": messages},
+        timeout=120,
+        stream=True,
+    )
+    response.raise_for_status()
+
+    chunks = []
+    for line in response.iter_lines(decode_unicode=True):
+        if not line or not line.startswith("data:"):
+            continue
+        payload = line[len("data:"):].strip()
+        if payload == "[DONE]":
+            break
+        try:
+            delta = json.loads(payload)["choices"][0].get("delta", {})
+        except (json.JSONDecodeError, KeyError, IndexError):
+            continue
+        content = delta.get("content")
+        if content:
+            chunks.append(content)
+    return "".join(chunks)
+
+
+def _extract_json(text):
+    """从 AI 返回文本中提取 JSON 对象（容忍 ```json 代码块包裹或前后多余文字）。"""
+    text = text.strip()
+    # 去掉 markdown 代码块围栏
+    if text.startswith("```"):
+        text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text, flags=re.IGNORECASE).strip()
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        # 兜底：截取第一个 { 到最后一个 } 之间的内容
+        start, end = text.find("{"), text.rfind("}")
+        if start != -1 and end != -1 and end > start:
+            return json.loads(text[start:end + 1])
+        raise
+
+
+def filter_betting_intent(keywords):
+    """
+    批量把长尾词交给 AI，判断博彩意向。
+    返回 dict：{关键词: {"intent": "...", "reason": "..."}}，只含 AI 判定有意向的词。
+    """
+    if not keywords:
+        return {}
+    prompt = get_setting("AI_BETTING_INTENT_PROMPT") or DEFAULT_BETTING_INTENT_PROMPT
+    keyword_list = "\n".join(f"- {kw}" for kw in keywords)
+    prompt = prompt.replace("[input]", keyword_list).replace("[output]", BETTING_INTENT_OUTPUT_SPEC)
+
+    raw = _call_ai_stream([{"role": "user", "content": prompt}])
+    data = _extract_json(raw)
+
+    result = {}
+    for item in data.get("betting_keywords", []):
+        kw = (item.get("keyword") or "").strip()
+        if kw:
+            result[kw] = {"intent": item.get("intent", ""), "reason": item.get("reason", "")}
+    return result

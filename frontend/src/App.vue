@@ -17,7 +17,7 @@ const runPage = ref(1);
 const resultPage = ref(1);
 const runTotal = ref(0);
 const resultTotal = ref(0);
-const form = ref({ root_keyword: "", country: "US", language: "en", max_keywords: 15 });
+const form = ref({ root_keyword: "", country: "US", language: "en", max_keywords: 15, scoring_model: "2.0" });
 
 const scoreLabels = {
   title_mismatch: "标题未完全匹配",
@@ -32,6 +32,7 @@ const statusMeta = {
   rule_scored: { label: "规则打分完成", type: "success" },
   serpapi_error: { label: "SerpApi 查询失败", type: "danger" },
   needs_review: { label: "数据不全，需人工复核", type: "warning" },
+  eliminated: { label: "已淘汰", type: "info" },
 };
 
 function statusLabel(status) {
@@ -159,6 +160,7 @@ onMounted(async () => {
               <el-form-item label="目标国家"><el-select v-model="form.country" filterable><el-option v-for="item in options.countries" :key="item.value" :label="`${item.label} (${item.value})`" :value="item.value" /></el-select></el-form-item>
               <el-form-item label="结果语言"><el-select v-model="form.language" filterable><el-option v-for="item in options.languages" :key="item.value" :label="`${item.label} (${item.value})`" :value="item.value" /></el-select></el-form-item>
               <el-form-item label="最大长尾数"><el-input-number v-model="form.max_keywords" :min="1" :max="100" /></el-form-item>
+              <el-form-item label="打分模型"><el-select v-model="form.scoring_model" style="width: 260px"><el-option label="2.0（AI 博彩意图筛选 + 全量打分）" value="2.0" /><el-option label="1.0（前 5 视频规则打分）" value="1.0" /></el-select></el-form-item>
               <el-button type="primary" :loading="loading" @click="createRun">开始分析</el-button>
             </el-form>
           </el-card>
@@ -169,6 +171,7 @@ onMounted(async () => {
               <el-table-column prop="root_keyword" label="基础关键词" min-width="180" />
               <el-table-column prop="country" label="国家" width="80" />
               <el-table-column prop="language" label="语言" width="90" />
+              <el-table-column label="模型" width="70"><template #default="{ row }"><el-tag size="small" :type="row.scoring_model === '2.0' ? 'success' : 'info'" effect="plain">{{ row.scoring_model }}</el-tag></template></el-table-column>
               <el-table-column prop="status" label="状态" width="110" />
               <el-table-column prop="result_count" label="已处理" width="90" />
               <el-table-column label="更新时间" min-width="170"><template #default="{ row }">{{ datetime(row.updated_at) }}</template></el-table-column>
@@ -185,7 +188,7 @@ onMounted(async () => {
             <template #header><div class="card-title"><div><strong>关键词评选结果</strong><el-tag v-if="selectedRun" class="run-filter-tag" closable type="primary" @close="clearRunFilter"> 当前任务：{{ selectedRunLabel }}</el-tag></div><div><el-input v-model="resultSearch" clearable placeholder="搜索基础词或长尾词" class="search-input" @keyup.enter="loadResults(1)" @clear="loadResults(1)" /><el-button @click="loadResults(1)">搜索</el-button><el-button @click="loadResults">刷新</el-button><el-button type="success" plain @click="exportCsv">导出完整 CSV</el-button></div></div></template>
             <el-alert title="点击左侧展开箭头可查看该关键词前 5 个视频的完整评选依据；评分越高，代表潜在内容空位越大。" type="info" :closable="false" class="process-note" />
             <el-table :data="results" stripe v-loading="loading" empty-text="创建关键词任务后在此查看结果">
-              <el-table-column type="expand" width="48"><template #default="{ row }"><div class="video-details"><div class="score-summary"><strong>规则评分过程（总分 {{ row.rule_score ?? 0 }}）</strong><span v-for="(score, key) in row.score_breakdown" :key="key" class="score">{{ scoreLabels[key] || key }}：{{ score }} 分</span></div><el-table :data="row.top5_video_data" border size="small" empty-text="没有可展示的视频数据"><el-table-column type="index" label="#" width="48" /><el-table-column label="视频标题" min-width="260"><template #default="{ row: video }"><a v-if="video.video_url" :href="video.video_url" target="_blank" rel="noreferrer">{{ video.title }}</a><span v-else>{{ video.title }}</span></template></el-table-column><el-table-column prop="channel_name" label="频道" min-width="150" /><el-table-column label="订阅数" width="100"><template #default="{ row: video }">{{ number(video.subscriber_count) }}</template></el-table-column><el-table-column label="播放" width="100"><template #default="{ row: video }">{{ number(video.view_count) }}</template></el-table-column><el-table-column label="点赞" width="100"><template #default="{ row: video }">{{ number(video.like_count) }}</template></el-table-column><el-table-column label="评论" width="100"><template #default="{ row: video }">{{ number(video.comment_count) }}</template></el-table-column><el-table-column label="发布时间" min-width="170"><template #default="{ row: video }">{{ datetime(video.published_at) }}</template></el-table-column></el-table></div></template></el-table-column>
+              <el-table-column type="expand" width="48"><template #default="{ row }"><div class="video-details"><div v-if="row.agent_result && row.agent_result.intent" class="agent-summary"><strong>AI 博彩意图判定</strong><el-tag size="small" type="warning" effect="light">意向：{{ row.agent_result.intent }}</el-tag><span class="agent-reason">{{ row.agent_result.reason }}</span></div><div class="score-summary"><strong>规则评分过程（总分 {{ row.rule_score ?? 0 }}）</strong><span v-for="(score, key) in row.score_breakdown" :key="key" class="score">{{ scoreLabels[key] || key }}：{{ score }} 分</span></div><el-table :data="row.top5_video_data" border size="small" empty-text="没有可展示的视频数据"><el-table-column type="index" label="#" width="48" /><el-table-column label="视频标题" min-width="260"><template #default="{ row: video }"><a v-if="video.video_url" :href="video.video_url" target="_blank" rel="noreferrer">{{ video.title }}</a><span v-else>{{ video.title }}</span></template></el-table-column><el-table-column prop="channel_name" label="频道" min-width="150" /><el-table-column label="订阅数" width="100"><template #default="{ row: video }">{{ number(video.subscriber_count) }}</template></el-table-column><el-table-column label="播放" width="100"><template #default="{ row: video }">{{ number(video.view_count) }}</template></el-table-column><el-table-column label="点赞" width="100"><template #default="{ row: video }">{{ number(video.like_count) }}</template></el-table-column><el-table-column label="评论" width="100"><template #default="{ row: video }">{{ number(video.comment_count) }}</template></el-table-column><el-table-column label="发布时间" min-width="170"><template #default="{ row: video }">{{ datetime(video.published_at) }}</template></el-table-column></el-table></div></template></el-table-column>
               <el-table-column prop="root_keyword" label="基础词" min-width="135" />
               <el-table-column prop="keyword" label="长尾关键词" min-width="190" />
               <el-table-column prop="rule_score" label="总分" width="78" sortable />

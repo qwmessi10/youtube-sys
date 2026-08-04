@@ -19,9 +19,10 @@ DEFAULT_SETTINGS = [
     ("YOUTUBE_API_KEY", "YouTube Data API V3 Key"),
     ("SERPAPI_QPS", "SerpApi 每秒最大请求数，控制限流，默认 1"),
     ("SERPAPI_MAX_RETRIES", "SerpApi/YouTube 遇 429 或 5xx 时的重试次数，默认 2"),
-    ("AI_BASE_URL", "OpenAI-compatible AI interface address"),
-    ("AI_API_KEY", "AI API Key; not used in phase one"),
-    ("AI_MODEL", "AI model name; not used in phase one"),
+    ("AI_BASE_URL", "AI 接口地址（OpenAI 兼容中转，如 moretokens）"),
+    ("AI_API_KEY", "AI API Key（打分模型 2.0 博彩意图筛选使用）"),
+    ("AI_MODEL", "AI 模型名，2.0 默认 gemini-3.6-flash-medium"),
+    ("AI_BETTING_INTENT_PROMPT", "打分模型 2.0 博彩意图筛选提示词；留空则用系统默认提示词"),
 ]
 
 SCORE_LABELS = {
@@ -144,16 +145,19 @@ class KeywordResultViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, vie
         response.write("\ufeff")
         writer = csv.writer(response)
         headers = [
-            "基础关键词", "长尾关键词", "任务状态", "淘汰阶段", "淘汰原因", "规则总分", "最终处理结果",
+            "基础关键词", "长尾关键词", "打分模型", "任务状态", "淘汰阶段", "淘汰原因", "规则总分", "最终处理结果",
+            "AI博彩意向", "AI判定理由",
             *SCORE_LABELS.values(),
         ]
         for position in range(1, 6):
             headers.extend([f"视频{position}-{label}" for _, label in VIDEO_CSV_FIELDS])
         writer.writerow(headers)
         for item in queryset:
+            agent = item.agent_result or {}
             row = [
-                item.run.root_keyword, item.keyword, item.status, item.elimination_stage,
+                item.run.root_keyword, item.keyword, item.run.scoring_model, item.status, item.elimination_stage,
                 item.elimination_reason, item.rule_score, item.final_decision,
+                agent.get("intent", ""), agent.get("reason", ""),
                 *[item.score_breakdown.get(key, 0) for key in SCORE_LABELS],
             ]
             videos = item.top5_video_data or []

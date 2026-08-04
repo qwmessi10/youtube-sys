@@ -1,9 +1,9 @@
 <script setup>
-import { onMounted, ref } from "vue";
+import { computed, onMounted, ref } from "vue";
 import axios from "axios";
 import { ElMessage } from "element-plus";
 
-const activeMenu = ref("keywords");
+const activeMenu = ref("tasks");
 const loading = ref(false);
 const settings = ref([]);
 const runs = ref([]);
@@ -22,6 +22,20 @@ const logDrawer = ref(false);
 const logLoading = ref(false);
 const logData = ref(null);
 const logRun = ref(null);
+const agents = ref([]);
+const agentLoading = ref(false);
+
+const menuTitles = { tasks: "任务管理", agents: "关键词 Agent 管理", settings: "全局设置" };
+const menuTitle = computed(() => menuTitles[activeMenu.value] || "关键词系统");
+
+// Agent 按打分模型分组，方便 UI 按模型分区展示
+const agentsByModel = computed(() => {
+  const groups = {};
+  for (const a of agents.value) {
+    (groups[a.scoring_model] ||= []).push(a);
+  }
+  return groups;
+});
 
 const scoreLabels = {
   title_mismatch: "标题未完全匹配",
@@ -105,6 +119,41 @@ async function saveSettings() {
   }
 }
 
+async function loadAgents() {
+  agentLoading.value = true;
+  try {
+    const { data } = await axios.get("/api/agent-prompts/");
+    agents.value = Array.isArray(data) ? data : data.results || [];
+  } catch {
+    ElMessage.error("加载 Agent 列表失败");
+  } finally {
+    agentLoading.value = false;
+  }
+}
+
+async function saveAgent(agent) {
+  try {
+    await axios.patch(`/api/agent-prompts/${agent.id}/`, {
+      prompt: agent.prompt,
+      enabled: agent.enabled,
+    });
+    ElMessage.success(`已保存「${agent.name}」`);
+  } catch {
+    ElMessage.error("保存 Agent 失败");
+  }
+}
+
+async function resetAgentPrompt(agent) {
+  try {
+    const { data } = await axios.get(`/api/agent-prompts/${agent.id}/default_prompt/`);
+    if (!data.prompt) return ElMessage.warning("该 Agent 没有系统默认提示词");
+    agent.prompt = data.prompt;  // 只填回编辑框，需用户点「保存」才写库
+    ElMessage.success("已载入系统默认提示词，确认后请点击保存");
+  } catch {
+    ElMessage.error("获取默认提示词失败");
+  }
+}
+
 async function controlRun(run, action) {
   const labels = { pause: "暂停", restart: "重启", stop: "停止" };
   try {
@@ -120,6 +169,11 @@ function selectRun(run) {
   selectedRun.value = run.id;
   selectedRunLabel.value = run.root_keyword;
   loadResults(1);
+}
+
+// 给当前选中的任务行加高亮 class，让「正在查看哪个任务」一目了然
+function runRowClass({ row }) {
+  return row.id === selectedRun.value ? "row-selected" : "";
 }
 
 async function openLog(run) {
@@ -152,7 +206,7 @@ function exportCsv() {
 }
 
 onMounted(async () => {
-  await Promise.all([loadRuns(), loadResults(), loadSettings(), loadOptions()]);
+  await Promise.all([loadRuns(), loadResults(), loadSettings(), loadOptions(), loadAgents()]);
 });
 </script>
 
@@ -160,8 +214,20 @@ onMounted(async () => {
   <el-container class="shell">
     <el-aside width="236px" class="sidebar">
       <div class="brand"><span>YT</span><div>YouTube Sys<small>内容自动化后台</small></div></div>
-      <el-menu :default-active="activeMenu" @select="activeMenu = $event" class="menu">
-        <el-menu-item index="keywords">关键词系统</el-menu-item>
+      <el-menu
+        :default-active="activeMenu"
+        @select="activeMenu = $event"
+        class="menu"
+        :default-openeds="['keywords']"
+        background-color="#17212d"
+        text-color="#b6c5d4"
+        active-text-color="#ffffff"
+      >
+        <el-sub-menu index="keywords">
+          <template #title>关键词系统</template>
+          <el-menu-item index="tasks">任务管理</el-menu-item>
+          <el-menu-item index="agents">关键词 Agent 管理</el-menu-item>
+        </el-sub-menu>
         <el-menu-item index="settings">全局设置</el-menu-item>
         <el-menu-item disabled index="data">数据抓取系统（后续）</el-menu-item>
         <el-menu-item disabled index="content">内容生成系统（后续）</el-menu-item>
@@ -169,9 +235,9 @@ onMounted(async () => {
       </el-menu>
     </el-aside>
     <el-container>
-      <el-header class="header"><strong>{{ activeMenu === 'settings' ? '全局设置' : '关键词系统' }}</strong><span>第一期：关键词发现与规则评分</span></el-header>
+      <el-header class="header"><strong>{{ menuTitle }}</strong><span>第一期：关键词发现与规则评分</span></el-header>
       <el-main>
-        <template v-if="activeMenu === 'keywords'">
+        <template v-if="activeMenu === 'tasks'">
           <el-card class="create-card" shadow="never">
             <template #header><strong>创建关键词任务</strong></template>
             <el-form :inline="true" @submit.prevent="createRun">
@@ -186,7 +252,7 @@ onMounted(async () => {
 
           <el-card shadow="never" class="table-card">
             <template #header><div class="card-title"><strong>任务记录</strong><div><el-input v-model="runSearch" clearable placeholder="搜索基础关键词" class="search-input" @keyup.enter="loadRuns(1)" @clear="loadRuns(1)" /><el-button @click="loadRuns(1)">搜索</el-button></div></div></template>
-            <el-table :data="runs" size="small" empty-text="暂无任务" @row-click="(row) => selectRun(row)">
+            <el-table :data="runs" size="small" empty-text="暂无任务" :row-class-name="runRowClass" class="clickable-table" @row-click="(row) => selectRun(row)">
               <el-table-column prop="root_keyword" label="基础关键词" min-width="180" />
               <el-table-column prop="country" label="国家" width="80" />
               <el-table-column prop="language" label="语言" width="90" />
@@ -219,6 +285,45 @@ onMounted(async () => {
             <el-pagination v-model:current-page="resultPage" class="pagination" layout="total, prev, pager, next" :page-size="10" :total="resultTotal" @current-change="loadResults" />
           </el-card>
         </template>
+        <template v-else-if="activeMenu === 'agents'">
+          <el-alert
+            title="关键词 Agent 管理"
+            description="每个 Agent 的名称和用途是固定的，这里只用来编辑它的提示词。若发现意图识别不准，可在提示词中补充「哪些词属于博彩意向」的说明，让判断更贴合你的需求。"
+            type="success"
+            :closable="false"
+            class="agent-intro"
+            show-icon
+          />
+          <div v-loading="agentLoading">
+            <div v-for="(list, model) in agentsByModel" :key="model" class="agent-model-block">
+              <div class="agent-model-head">
+                <el-tag :type="model === '2.0' ? 'success' : 'info'" size="large" effect="dark">打分模型 {{ model }}</el-tag>
+                <span class="agent-model-sub">{{ list.length }} 个 Agent</span>
+              </div>
+              <el-card v-for="agent in list" :key="agent.id" shadow="never" class="agent-card">
+                <template #header>
+                  <div class="agent-card-head">
+                    <div class="agent-card-meta">
+                      <el-tag size="small" type="warning" effect="plain">{{ agent.agent_type_label }}</el-tag>
+                      <strong class="agent-card-name">{{ agent.name }}</strong>
+                      <span class="agent-card-desc">{{ agent.description }}</span>
+                    </div>
+                    <el-switch v-model="agent.enabled" active-text="启用" inactive-text="停用" inline-prompt />
+                  </div>
+                </template>
+                <el-form label-position="top">
+                  <el-form-item label="提示词（Prompt）">
+                    <el-input v-model="agent.prompt" type="textarea" :autosize="{ minRows: 10, maxRows: 30 }" placeholder="留空则使用系统内置默认提示词" />
+                    <small class="agent-hint">占位符：[input] 自动替换为待判定的关键词列表，[output] 自动替换为固定的 JSON 输出格式说明（这两个请勿删除）。想让识别更准，可在「# 目标」附近补充具体规则，例如列出哪些词应判为高意向。</small>
+                  </el-form-item>
+                  <el-button type="primary" @click="saveAgent(agent)">保存提示词</el-button>
+                  <el-button plain @click="resetAgentPrompt(agent)">恢复系统默认</el-button>
+                </el-form>
+              </el-card>
+            </div>
+            <el-empty v-if="!agentLoading && agents.length === 0" description="暂无 Agent 配置" />
+          </div>
+        </template>
         <el-card v-else-if="activeMenu === 'settings'" shadow="never">
           <template #header><strong>第三方 API 与 AI 接入配置</strong></template>
           <p class="hint">保存后将优先使用这里的值；AI 配置已预留，第一期不会调用 AI。</p>
@@ -241,7 +346,7 @@ onMounted(async () => {
 
           <el-divider content-position="left">Suggest 拓展词</el-divider>
           <template v-if="logData.run_log && logData.run_log.suggest">
-            <p class="log-line">拓展词总数：{{ logData.run_log.suggest.count }}</p>
+            <p class="log-line">保留拓展词（{{ logData.run_log.suggest.count }}）：</p>
             <div class="log-tags">
               <el-tag
                 v-for="kw in (logData.run_log.suggest.all_keywords || [])"
@@ -251,6 +356,19 @@ onMounted(async () => {
                 type="info"
               >{{ kw }}</el-tag>
             </div>
+            <template v-if="(logData.run_log.suggest.dropped_by_language || []).length">
+              <p class="log-line">语言过滤剔除（目标语言 {{ logData.run_log.suggest.language }}，共 {{ logData.run_log.suggest.dropped_count }} 个非目标语言词）：</p>
+              <div class="log-tags">
+                <el-tag
+                  v-for="kw in logData.run_log.suggest.dropped_by_language"
+                  :key="kw"
+                  size="small"
+                  class="log-tag"
+                  type="danger"
+                  effect="plain"
+                >{{ kw }}</el-tag>
+              </div>
+            </template>
           </template>
           <el-empty v-else description="无 Suggest 日志" :image-size="60" />
 

@@ -16,6 +16,36 @@ class GlobalSetting(models.Model):
         return self.key
 
 
+class AgentPrompt(models.Model):
+    """
+    打分模型里各个 AI Agent 的提示词。
+    一个打分模型（scoring_model）下可以有多个 agent（agent_type 区分用途，如意图识别），
+    每个 agent 一条记录，方便后续扩展（新模型、新 agent 只需插一行）。
+    """
+    AGENT_INTENT = "intent"
+    AGENT_TYPE_CHOICES = [
+        (AGENT_INTENT, "关键词意图识别"),
+    ]
+
+    scoring_model = models.CharField(max_length=8)  # 对应 KeywordRun.SCORING_MODEL_*
+    agent_type = models.CharField(max_length=32, choices=AGENT_TYPE_CHOICES)
+    name = models.CharField(max_length=100)  # 展示名，如「博彩意图识别」
+    description = models.CharField(max_length=255, blank=True)
+    prompt = models.TextField(blank=True)  # 留空则运行时回退到代码内默认提示词
+    enabled = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["scoring_model", "agent_type"]
+        constraints = [
+            models.UniqueConstraint(fields=["scoring_model", "agent_type"], name="unique_agent_per_model"),
+        ]
+
+    def __str__(self):
+        return f"{self.scoring_model} / {self.name}"
+
+
 class KeywordRun(models.Model):
     STATUS_PENDING = "pending"
     STATUS_RUNNING = "running"

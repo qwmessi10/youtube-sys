@@ -10,8 +10,9 @@ from rest_framework import mixins, status, viewsets
 from rest_framework.decorators import action
 from rest_framework.response import Response
 
-from .models import GlobalSetting, KeywordResult, KeywordRun
-from .serializers import COUNTRIES, LANGUAGES, GlobalSettingSerializer, KeywordResultSerializer, KeywordRunSerializer
+from .models import AgentPrompt, GlobalSetting, KeywordResult, KeywordRun
+from .serializers import COUNTRIES, LANGUAGES, AgentPromptSerializer, GlobalSettingSerializer, KeywordResultSerializer, KeywordRunSerializer
+from .services import get_default_agent_prompt
 from .tasks import process_keyword_run
 
 DEFAULT_SETTINGS = [
@@ -22,7 +23,6 @@ DEFAULT_SETTINGS = [
     ("AI_BASE_URL", "AI 接口地址（OpenAI 兼容中转，如 moretokens）"),
     ("AI_API_KEY", "AI API Key（打分模型 2.0 博彩意图筛选使用）"),
     ("AI_MODEL", "AI 模型名，2.0 默认 gemini-3.6-flash-medium"),
-    ("AI_BETTING_INTENT_PROMPT", "打分模型 2.0 博彩意图筛选提示词；留空则用系统默认提示词"),
 ]
 
 SCORE_LABELS = {
@@ -176,3 +176,22 @@ class KeywordResultViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, vie
                 row.extend([video.get(key, "") for key, _ in VIDEO_CSV_FIELDS])
             writer.writerow(row)
         return response
+
+
+class AgentPromptViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, mixins.UpdateModelMixin, viewsets.GenericViewSet):
+    """打分模型里各 Agent 的提示词管理：列表 + 编辑（不开放增删，Agent 由迁移种子维护）。"""
+    queryset = AgentPrompt.objects.all()
+    serializer_class = AgentPromptSerializer
+
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        scoring_model = self.request.query_params.get("scoring_model")
+        if scoring_model:
+            queryset = queryset.filter(scoring_model=scoring_model)
+        return queryset
+
+    @action(detail=True, methods=["get"])
+    def default_prompt(self, request, pk=None):
+        """返回该 Agent 的系统内置默认提示词，供前端「恢复系统默认」使用。"""
+        agent = self.get_object()
+        return Response({"prompt": get_default_agent_prompt(agent.scoring_model, agent.agent_type)})

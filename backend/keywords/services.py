@@ -7,7 +7,7 @@ from datetime import datetime, timedelta
 import requests
 from django.utils import timezone
 
-from .models import GlobalSetting
+from .models import AgentPrompt, GlobalSetting, KeywordRun
 
 # 2.0 博彩意图筛选的默认提示词（可在全局设置 AI_BETTING_INTENT_PROMPT 覆盖）。
 DEFAULT_BETTING_INTENT_PROMPT = """# 角色
@@ -26,6 +26,16 @@ DEFAULT_BETTING_INTENT_PROMPT = """# 角色
 BETTING_INTENT_OUTPUT_SPEC = """严格只输出一个 JSON 对象，不要输出任何解释文字或 markdown 代码块标记，格式如下：
 {"betting_keywords": [{"keyword": "原样的搜索词", "intent": "high 或 medium", "reason": "判定理由"}]}
 只包含有博彩意向的词；没有任何有意向的词时输出 {"betting_keywords": []}。"""
+
+# (打分模型, agent 类型) → 内置默认提示词。用于种子回填与「恢复系统默认」。
+DEFAULT_AGENT_PROMPTS = {
+    ("2.0", "intent"): DEFAULT_BETTING_INTENT_PROMPT,
+}
+
+
+def get_default_agent_prompt(scoring_model, agent_type):
+    """返回某个 Agent 的内置默认提示词；未登记则返回空串。"""
+    return DEFAULT_AGENT_PROMPTS.get((scoring_model, agent_type), "")
 
 # worker 进程内记录上一次 SerpApi 请求的时间戳，用于按 QPS 节流（第一版单 worker 串行处理够用）。
 _last_serpapi_request_at = 0.0
@@ -85,6 +95,60 @@ def _request_with_retry(method, url, *, throttle=False, **kwargs):
                 continue
             raise
     raise last_exc
+
+
+# 各语言允许出现的「主体文字」Unicode 区间。用于剔除 Suggest 返回的非目标语言长尾词。
+# 判断逻辑：一个词若含有任何「非中性、且不属于目标语言区间」的字母，就判为语言不符。
+# 中性字符（数字、空格、常见标点、货币符号等）不参与判断，允许任意语言里出现。
+_LANG_SCRIPT_RANGES = {
+    "en": [(0x0041, 0x024F)],  # 拉丁字母（含扩展），英/西/葡/德/法/意共用
+    "es": [(0x0041, 0x024F)],
+    "pt": [(0x0041, 0x024F)],
+    "de": [(0x0041, 0x024F)],
+    "fr": [(0x0041, 0x024F)],
+    "it": [(0x0041, 0x024F)],
+    "zh-CN": [(0x4E00, 0x9FFF), (0x3400, 0x4DBF)],  # 中日韩统一表意文字
+    "zh-TW": [(0x4E00, 0x9FFF), (0x3400, 0x4DBF)],
+    "ja": [(0x3040, 0x30FF), (0x4E00, 0x9FFF)],  # 平/片假名 + 汉字
+    "ko": [(0xAC00, 0xD7A3), (0x1100, 0x11FF)],  # 谚文
+    "hi": [(0x0900, 0x097F)],  # 天城文
+    "ar": [(0x0600, 0x06FF)],  # 阿拉伯文
+}
+
+
+def _is_neutral_char(ch):
+    """数字、空白、标点、符号等中性字符：任何语言都可能出现，不作为语言判据。"""
+    return not ch.isalpha()
+
+
+def _matches_language(text, language):
+    """
+    判断一个关键词是否属于目标语言。
+    规则：忽略中性字符后，只要出现一个「不在目标语言区间内」的字母，就判定不符。
+    未在表中登记的语言默认放行（不做过滤，避免误杀）。
+    """
+    ranges = _LANG_SCRIPT_RANGES.get(language)
+    if not ranges:
+        return True
+    for ch in text:
+        if _is_neutral_char(ch):
+            continue
+        code = ord(ch)
+        if not any(lo <= code <= hi for lo, hi in ranges):
+            return False
+    return True
+
+
+def filter_by_language(keywords, language):
+    """
+    按目标语言过滤长尾词，返回 (kept, dropped)：
+      - kept：语言符合的词（保持原顺序）。
+      - dropped：被剔除的非目标语言词。
+    """
+    kept, dropped = [], []
+    for kw in keywords:
+        (kept if _matches_language(kw, language) else dropped).append(kw)
+    return kept, dropped
 
 
 def suggest_keywords(root_keyword, country, language):
@@ -316,7 +380,15 @@ def filter_betting_intent(keywords):
     """
     if not keywords:
         return {}, {}
-    prompt = get_setting("AI_BETTING_INTENT_PROMPT") or DEFAULT_BETTING_INTENT_PROMPT
+    # 提示词从 AgentPrompt 表读（2.0 的意图识别 Agent）；留空或未配置时回退到代码内默认提示词。
+    agent = AgentPrompt.objects.filter(
+        scoring_model=KeywordRun.SCORING_MODEL_V2,
+        agent_type=AgentPrompt.AGENT_INTENT,
+    ).first()
+    if agent and not agent.enabled:
+        # Agent 被停用：不调用 AI，全部词视为无意向（交给上层决定如何处理）。
+        return {}, {"disabled": True, "agent": agent.name}
+    prompt = (agent.prompt if agent and agent.prompt.strip() else "") or DEFAULT_BETTING_INTENT_PROMPT
     keyword_list = "\n".join(f"- {kw}" for kw in keywords)
     full_prompt = prompt.replace("[input]", keyword_list).replace("[output]", BETTING_INTENT_OUTPUT_SPEC)
 

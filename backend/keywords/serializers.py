@@ -1,6 +1,6 @@
 from rest_framework import serializers
 
-from .models import GlobalSetting, KeywordResult, KeywordRun
+from .models import AgentPrompt, GlobalSetting, KeywordResult, KeywordRun
 
 COUNTRIES = [
     ("US", "美国"), ("GB", "英国"), ("CA", "加拿大"), ("AU", "澳大利亚"),
@@ -50,3 +50,17 @@ class KeywordResultSerializer(serializers.ModelSerializer):
     class Meta:
         model = KeywordResult
         fields = ["id", "run", "root_keyword", "keyword", "status", "elimination_stage", "elimination_reason", "serpapi_status", "top5_video_data", "score_breakdown", "rule_score", "agent_result", "final_decision", "created_at", "updated_at"]
+
+
+class AgentPromptSerializer(serializers.ModelSerializer):
+    scoring_model_label = serializers.SerializerMethodField()
+    agent_type_label = serializers.CharField(source="get_agent_type_display", read_only=True)
+
+    class Meta:
+        model = AgentPrompt
+        # 名称/用途/模型/类型都是固定身份，建后不可改；只允许改 prompt 和 enabled。
+        fields = ["id", "scoring_model", "scoring_model_label", "agent_type", "agent_type_label", "name", "description", "prompt", "enabled", "updated_at"]
+        read_only_fields = ["scoring_model", "agent_type", "name", "description"]
+
+    def get_scoring_model_label(self, obj):
+        return dict(KeywordRun.SCORING_MODEL_CHOICES).get(obj.scoring_model, obj.scoring_model)

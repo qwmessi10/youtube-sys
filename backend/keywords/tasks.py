@@ -6,6 +6,7 @@ from .services import (
     calculate_score_v2,
     enrich_videos,
     filter_betting_intent,
+    filter_by_language,
     search_youtube,
     suggest_keywords,
 )
@@ -72,16 +73,25 @@ def process_keyword_run(self, run_id, task_token):
         serp_limit = None if is_v2 else 5  # 2.0 取全部视频，1.0 取前 5
 
         suggestions = suggest_keywords(run.root_keyword, run.country, run.language)
+
+        # 2.0：先按目标语言过滤 Suggest 词，剔除结果语言不符的（如要英语却返回俄语/中文词）。
+        dropped_by_language = []
+        if is_v2:
+            suggestions, dropped_by_language = filter_by_language(suggestions, run.language)
+
         # 输入词本身也纳入评分：即使 Suggest 拓展不出长尾词，也能评估输入词本身。
         all_keywords = list(dict.fromkeys([run.root_keyword, *suggestions]))
 
-        # 记录 Suggest 工作日志（拓展的全部词）。
+        # 记录 Suggest 工作日志（拓展的全部词 + 被语言过滤掉的词）。
         log = dict(run.run_log or {})
         log["suggest"] = {
             "root_keyword": run.root_keyword,
             "suggested": list(suggestions),
             "all_keywords": all_keywords,
             "count": len(all_keywords),
+            "language": run.language,
+            "dropped_by_language": dropped_by_language,
+            "dropped_count": len(dropped_by_language),
         }
         run.run_log = log
         run.save(update_fields=["run_log", "updated_at"])

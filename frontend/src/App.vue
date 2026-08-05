@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, ref } from "vue";
+import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import axios from "axios";
 import { ElMessage } from "element-plus";
 
@@ -24,9 +24,29 @@ const logData = ref(null);
 const logRun = ref(null);
 const agents = ref([]);
 const agentLoading = ref(false);
+// Suggest 长尾词拓展工具
+const seForm = ref({ root_keyword: "", country: "US", language: "en", max_keywords: 5000 });
+const seRuns = ref([]);
+const seTotal = ref(0);
+const sePage = ref(1);
+const seLoading = ref(false);
+const seDetail = ref(null);        // 当前查看的任务详情（含词列表）
+const seDetailLoading = ref(false);
+let sePollTimer = null;            // 运行中任务的进度轮询定时器
 
-const menuTitles = { tasks: "任务管理", agents: "关键词 Agent 管理", settings: "全局设置" };
+const menuTitles = { tasks: "任务管理", agents: "关键词 Agent 管理", "suggest-expand": "获取 Suggest API 长尾词", settings: "全局设置" };
 const menuTitle = computed(() => menuTitles[activeMenu.value] || "关键词系统");
+
+// Suggest 拓展任务状态 → 文案 + 标签色
+const seStatusMeta = {
+  pending: { label: "待处理", type: "info" },
+  running: { label: "处理中", type: "warning" },
+  completed: { label: "已完成", type: "success" },
+  stopped: { label: "已停止", type: "info" },
+  failed: { label: "失败", type: "danger" },
+};
+const seStatusLabel = (s) => seStatusMeta[s]?.label || s;
+const seStatusType = (s) => seStatusMeta[s]?.type || "info";
 
 // Agent 按打分模型分组，方便 UI 按模型分区展示
 const agentsByModel = computed(() => {
@@ -154,6 +174,81 @@ async function resetAgentPrompt(agent) {
   }
 }
 
+async function loadSeRuns(page = sePage.value) {
+  sePage.value = page;
+  const { data } = await axios.get("/api/suggest-expansions/", { params: { page } });
+  seRuns.value = data.results;
+  seTotal.value = data.count;
+  // 有任务在跑就开启轮询，全部结束就停
+  if (seRuns.value.some((r) => r.status === "running" || r.status === "pending")) {
+    startSePoll();
+  } else {
+    stopSePoll();
+  }
+}
+
+async function createSeRun() {
+  if (!seForm.value.root_keyword.trim()) return ElMessage.warning("请输入词根");
+  seLoading.value = true;
+  try {
+    await axios.post("/api/suggest-expansions/", seForm.value);
+    ElMessage.success("拓展任务已开始，正在遍历 Suggest API");
+    await loadSeRuns(1);
+  } catch (error) {
+    ElMessage.error(error.response?.data ? "创建失败，请检查输入" : "无法连接后端");
+  } finally {
+    seLoading.value = false;
+  }
+}
+
+async function stopSeRun(run) {
+  try {
+    await axios.post(`/api/suggest-expansions/${run.id}/stop/`);
+    ElMessage.success("已停止");
+    await loadSeRuns();
+  } catch (error) {
+    ElMessage.error(error.response?.data?.detail || "停止失败");
+  }
+}
+
+async function openSeDetail(run) {
+  seDetailLoading.value = true;
+  seDetail.value = null;
+  try {
+    const { data } = await axios.get(`/api/suggest-expansions/${run.id}/`);
+    seDetail.value = data;
+  } catch {
+    ElMessage.error("加载结果失败");
+  } finally {
+    seDetailLoading.value = false;
+  }
+}
+
+function exportSeCsv(run) {
+  window.open(`/api/suggest-expansions/${run.id}/export/`, "_blank");
+}
+
+async function refreshSeDetailSilently() {
+  if (!seDetail.value) return;
+  try {
+    const { data } = await axios.get(`/api/suggest-expansions/${seDetail.value.id}/`);
+    seDetail.value = data;
+  } catch { /* 轮询静默失败，不打扰用户 */ }
+}
+
+function startSePoll() {
+  if (sePollTimer) return;
+  sePollTimer = setInterval(async () => {
+    if (activeMenu.value !== "suggest-expand") return;
+    await loadSeRuns();
+    await refreshSeDetailSilently();  // 同步刷新当前详情词表，看实时增长
+  }, 3000);
+}
+
+function stopSePoll() {
+  if (sePollTimer) { clearInterval(sePollTimer); sePollTimer = null; }
+}
+
 async function controlRun(run, action) {
   const labels = { pause: "暂停", restart: "重启", stop: "停止" };
   try {
@@ -206,7 +301,15 @@ function exportCsv() {
 }
 
 onMounted(async () => {
-  await Promise.all([loadRuns(), loadResults(), loadSettings(), loadOptions(), loadAgents()]);
+  await Promise.all([loadRuns(), loadResults(), loadSettings(), loadOptions(), loadAgents(), loadSeRuns()]);
+});
+
+onUnmounted(() => stopSePoll());
+
+// 离开工具页时停止轮询，进入时刷新一次
+watch(activeMenu, (menu) => {
+  if (menu === "suggest-expand") loadSeRuns();
+  else stopSePoll();
 });
 </script>
 
@@ -218,7 +321,7 @@ onMounted(async () => {
         :default-active="activeMenu"
         @select="activeMenu = $event"
         class="menu"
-        :default-openeds="['keywords']"
+        :default-openeds="['keywords', 'tools']"
         background-color="#17212d"
         text-color="#b6c5d4"
         active-text-color="#ffffff"
@@ -227,6 +330,10 @@ onMounted(async () => {
           <template #title>关键词系统</template>
           <el-menu-item index="tasks">任务管理</el-menu-item>
           <el-menu-item index="agents">关键词 Agent 管理</el-menu-item>
+        </el-sub-menu>
+        <el-sub-menu index="tools">
+          <template #title>实用工具</template>
+          <el-menu-item index="suggest-expand">获取 Suggest API 长尾词</el-menu-item>
         </el-sub-menu>
         <el-menu-item index="settings">全局设置</el-menu-item>
         <el-menu-item disabled index="data">数据抓取系统（后续）</el-menu-item>
@@ -245,7 +352,7 @@ onMounted(async () => {
               <el-form-item label="目标国家"><el-select v-model="form.country" filterable><el-option v-for="item in options.countries" :key="item.value" :label="`${item.label} (${item.value})`" :value="item.value" /></el-select></el-form-item>
               <el-form-item label="结果语言"><el-select v-model="form.language" filterable><el-option v-for="item in options.languages" :key="item.value" :label="`${item.label} (${item.value})`" :value="item.value" /></el-select></el-form-item>
               <el-form-item label="最大长尾数"><el-input-number v-model="form.max_keywords" :min="1" :max="100" /></el-form-item>
-              <el-form-item label="打分模型"><el-select v-model="form.scoring_model" style="width: 260px"><el-option label="2.0（AI 博彩意图筛选 + 全量打分）" value="2.0" /><el-option label="1.0（前 5 视频规则打分）" value="1.0" /></el-select></el-form-item>
+              <el-form-item label="打分模型"><el-select v-model="form.scoring_model" style="width: 260px"><el-option label="2.0（AI BC意图筛选 + 全量打分）" value="2.0" /><el-option label="1.0（前 5 视频规则打分）" value="1.0" /></el-select></el-form-item>
               <el-button type="primary" :loading="loading" @click="createRun">开始分析</el-button>
             </el-form>
           </el-card>
@@ -323,6 +430,60 @@ onMounted(async () => {
             </div>
             <el-empty v-if="!agentLoading && agents.length === 0" description="暂无 Agent 配置" />
           </div>
+        </template>
+        <template v-else-if="activeMenu === 'suggest-expand'">
+          <el-alert
+            title="获取 Suggest API 长尾词"
+            description="输入词根后，工具会直接用词根查询 Suggest API 拿到长尾词，再把每个新词当作词根继续递归查询，直到再没有新词返回为止（默认最多 5000 个）。适合一次性挖掘某个主题下的全部真实搜索词。"
+            type="success"
+            :closable="false"
+            class="agent-intro"
+            show-icon
+          />
+          <el-card class="create-card" shadow="never">
+            <template #header><strong>新建拓展任务</strong></template>
+            <el-form :inline="true" @submit.prevent="createSeRun">
+              <el-form-item label="词根"><el-input v-model="seForm.root_keyword" placeholder="例如：bitcoin" /></el-form-item>
+              <el-form-item label="目标国家"><el-select v-model="seForm.country" filterable><el-option v-for="item in options.countries" :key="item.value" :label="`${item.label} (${item.value})`" :value="item.value" /></el-select></el-form-item>
+              <el-form-item label="结果语言"><el-select v-model="seForm.language" filterable><el-option v-for="item in options.languages" :key="item.value" :label="`${item.label} (${item.value})`" :value="item.value" /></el-select></el-form-item>
+              <el-form-item label="最大词数上限"><el-input-number v-model="seForm.max_keywords" :min="1" :max="20000" :step="500" /></el-form-item>
+              <el-button type="primary" :loading="seLoading" @click="createSeRun">开始遍历</el-button>
+            </el-form>
+          </el-card>
+
+          <el-card shadow="never" class="table-card">
+            <template #header><strong>拓展任务列表</strong></template>
+            <el-table :data="seRuns" size="small" empty-text="暂无任务">
+              <el-table-column prop="root_keyword" label="词根" min-width="150" />
+              <el-table-column prop="country" label="国家" width="70" />
+              <el-table-column prop="language" label="语言" width="80" />
+              <el-table-column label="状态" width="100"><template #default="{ row }"><el-tag size="small" :type="seStatusType(row.status)" effect="light">{{ seStatusLabel(row.status) }}</el-tag></template></el-table-column>
+              <el-table-column label="已拓展词数" width="110"><template #default="{ row }">{{ number(row.keyword_count) }}</template></el-table-column>
+              <el-table-column label="已处理种子" width="110"><template #default="{ row }">{{ number(row.processed_seeds) }}</template></el-table-column>
+              <el-table-column label="轮次" width="70"><template #default="{ row }">{{ row.current_round }}</template></el-table-column>
+              <el-table-column label="更新时间" min-width="160"><template #default="{ row }">{{ datetime(row.updated_at) }}</template></el-table-column>
+              <el-table-column label="操作" width="230"><template #default="{ row }">
+                <el-button size="small" type="primary" plain @click="openSeDetail(row)">查看词</el-button>
+                <el-button size="small" type="danger" plain :disabled="!['pending','running'].includes(row.status)" @click="stopSeRun(row)">停止</el-button>
+                <el-button size="small" :disabled="!row.keyword_count" @click="exportSeCsv(row)">导出</el-button>
+              </template></el-table-column>
+            </el-table>
+            <el-pagination v-model:current-page="sePage" class="pagination" layout="total, prev, pager, next" :page-size="10" :total="seTotal" @current-change="loadSeRuns" />
+          </el-card>
+
+          <el-card v-if="seDetail" shadow="never" class="table-card" v-loading="seDetailLoading">
+            <template #header>
+              <div class="card-title">
+                <strong>「{{ seDetail.root_keyword }}」拓展结果（{{ seDetail.keyword_count }} 词）</strong>
+                <el-button size="small" @click="seDetail = null">收起</el-button>
+              </div>
+            </template>
+            <el-alert v-if="seDetail.status === 'running'" title="任务进行中，词表每 3 秒自动刷新…" type="info" :closable="false" class="process-note" />
+            <div class="se-keywords">
+              <el-tag v-for="kw in seDetail.keywords" :key="kw" size="small" class="log-tag" type="info">{{ kw }}</el-tag>
+            </div>
+            <el-empty v-if="!seDetail.keywords || seDetail.keywords.length === 0" description="暂无长尾词" :image-size="60" />
+          </el-card>
         </template>
         <el-card v-else-if="activeMenu === 'settings'" shadow="never">
           <template #header><strong>第三方 API 与 AI 接入配置</strong></template>

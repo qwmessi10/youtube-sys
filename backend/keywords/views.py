@@ -10,10 +10,14 @@ from rest_framework import mixins, status, viewsets
 from rest_framework.decorators import action
 from rest_framework.response import Response
 
-from .models import AgentPrompt, GlobalSetting, KeywordResult, KeywordRun
-from .serializers import COUNTRIES, LANGUAGES, AgentPromptSerializer, GlobalSettingSerializer, KeywordResultSerializer, KeywordRunSerializer
+from .models import AgentPrompt, GlobalSetting, KeywordResult, KeywordRun, SuggestExpansionRun
+from .serializers import (
+    COUNTRIES, LANGUAGES,
+    AgentPromptSerializer, GlobalSettingSerializer, KeywordResultSerializer, KeywordRunSerializer,
+    SuggestExpansionDetailSerializer, SuggestExpansionRunSerializer,
+)
 from .services import get_default_agent_prompt
-from .tasks import process_keyword_run
+from .tasks import process_keyword_run, process_suggest_expansion
 
 DEFAULT_SETTINGS = [
     ("SERPAPI_API_KEY", "SerpApi YouTube Search API Key"),
@@ -195,3 +199,63 @@ class AgentPromptViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, mixin
         """返回该 Agent 的系统内置默认提示词，供前端「恢复系统默认」使用。"""
         agent = self.get_object()
         return Response({"prompt": get_default_agent_prompt(agent.scoring_model, agent.agent_type)})
+
+
+class SuggestExpansionViewSet(mixins.ListModelMixin, mixins.CreateModelMixin, mixins.RetrieveModelMixin, viewsets.GenericViewSet):
+    """实用工具「获取 Suggest API 长尾词」：创建任务、查列表/详情、停止、导出 CSV。"""
+    queryset = SuggestExpansionRun.objects.all()
+    pagination_class = TenPerPagePagination
+
+    def get_serializer_class(self):
+        # 列表用轻量序列化器（不含 keywords 大字段），详情用完整的
+        if self.action == "retrieve":
+            return SuggestExpansionDetailSerializer
+        return SuggestExpansionRunSerializer
+
+    def _reap_stale_runs(self):
+        """
+        兜底清理僵尸任务：running 任务正常每几秒就更新一次，若超过 3 分钟没更新，
+        说明 worker 已被杀（如硬超时 SIGKILL、worker 重启），无法自我标记状态。
+        这里把它们标记为失败，避免前端永远卡在「处理中」。
+        """
+        import datetime
+        from django.utils import timezone
+        threshold = timezone.now() - datetime.timedelta(minutes=3)
+        stale = SuggestExpansionRun.objects.filter(status=SuggestExpansionRun.STATUS_RUNNING, updated_at__lt=threshold)
+        for run in stale:
+            run.status = SuggestExpansionRun.STATUS_FAILED
+            run.error_message = "任务超过 3 分钟无进度，可能已被系统中断（已保留此前拓展的词）"
+            run.save(update_fields=["status", "error_message", "updated_at"])
+
+    def list(self, request, *args, **kwargs):
+        self._reap_stale_runs()
+        return super().list(request, *args, **kwargs)
+
+    def create(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        run = serializer.save(status=SuggestExpansionRun.STATUS_RUNNING)
+        process_suggest_expansion.delay(run.id, str(run.task_token))
+        return Response(self.get_serializer(run).data, status=status.HTTP_201_CREATED)
+
+    @action(detail=True, methods=["post"])
+    def stop(self, request, pk=None):
+        run = self.get_object()
+        if run.status not in [SuggestExpansionRun.STATUS_PENDING, SuggestExpansionRun.STATUS_RUNNING]:
+            return Response({"detail": "只有处理中的任务可以停止。"}, status=status.HTTP_409_CONFLICT)
+        run.status = SuggestExpansionRun.STATUS_STOPPED
+        run.task_token = uuid.uuid4()  # 让正在跑的 worker 任务失效
+        run.save(update_fields=["status", "task_token", "updated_at"])
+        return Response(SuggestExpansionRunSerializer(run).data)
+
+    @action(detail=True, methods=["get"])
+    def export(self, request, pk=None):
+        run = self.get_object()
+        response = HttpResponse(content_type="text/csv; charset=utf-8")
+        response["Content-Disposition"] = f'attachment; filename="suggest-{run.id}.csv"'
+        response.write("﻿")
+        writer = csv.writer(response)
+        writer.writerow(["序号", "长尾关键词"])
+        for i, kw in enumerate(run.keywords or [], 1):
+            writer.writerow([i, kw])
+        return response

@@ -1,6 +1,6 @@
 from rest_framework import serializers
 
-from .models import AgentPrompt, GlobalSetting, KeywordResult, KeywordRun
+from .models import AgentPrompt, GlobalSetting, KeywordResult, KeywordRun, SuggestExpansionRun
 
 COUNTRIES = [
     ("US", "美国"), ("GB", "英国"), ("CA", "加拿大"), ("AU", "澳大利亚"),
@@ -64,3 +64,32 @@ class AgentPromptSerializer(serializers.ModelSerializer):
 
     def get_scoring_model_label(self, obj):
         return dict(KeywordRun.SCORING_MODEL_CHOICES).get(obj.scoring_model, obj.scoring_model)
+
+
+class SuggestExpansionRunSerializer(serializers.ModelSerializer):
+    """列表用：不含 keywords 大字段，避免列表接口过重。"""
+    class Meta:
+        model = SuggestExpansionRun
+        fields = ["id", "root_keyword", "country", "language", "max_keywords", "status", "error_message", "keyword_count", "processed_seeds", "current_round", "created_at", "updated_at"]
+        read_only_fields = ["status", "error_message", "keyword_count", "processed_seeds", "current_round"]
+
+    def validate_country(self, value):
+        if value not in dict(COUNTRIES):
+            raise serializers.ValidationError("请选择列表中的国家。")
+        return value
+
+    def validate_language(self, value):
+        if value not in dict(LANGUAGES):
+            raise serializers.ValidationError("请选择列表中的语言。")
+        return value
+
+    def validate_max_keywords(self, value):
+        if value < 1 or value > 20000:
+            raise serializers.ValidationError("上限需在 1~20000 之间。")
+        return value
+
+
+class SuggestExpansionDetailSerializer(SuggestExpansionRunSerializer):
+    """详情用：含完整 keywords 列表。"""
+    class Meta(SuggestExpansionRunSerializer.Meta):
+        fields = SuggestExpansionRunSerializer.Meta.fields + ["keywords"]

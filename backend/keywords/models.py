@@ -115,3 +115,37 @@ class KeywordResult(models.Model):
     class Meta:
         ordering = ["-rule_score", "keyword"]
         constraints = [models.UniqueConstraint(fields=["run", "keyword"], name="unique_keyword_per_run")]
+
+
+class SuggestExpansionRun(models.Model):
+    """
+    实用工具「获取 Suggest API 长尾词」的一次任务。
+    对词根做 BFS 递归拓展：查「词根 + 空格 + a~z」，新词继续当种子拓展，
+    直到没有新词或达到最大词数上限。结果词直接存 JSON 列表。
+    """
+    STATUS_PENDING = "pending"
+    STATUS_RUNNING = "running"
+    STATUS_COMPLETED = "completed"
+    STATUS_STOPPED = "stopped"
+    STATUS_FAILED = "failed"
+    STATUS_CHOICES = [
+        (STATUS_PENDING, "待处理"), (STATUS_RUNNING, "处理中"),
+        (STATUS_COMPLETED, "已完成"), (STATUS_STOPPED, "已停止"), (STATUS_FAILED, "失败"),
+    ]
+
+    root_keyword = models.CharField(max_length=255)
+    country = models.CharField(max_length=8, default="US")
+    language = models.CharField(max_length=16, default="en")
+    max_keywords = models.PositiveIntegerField(default=5000)  # 安全上限，防止热门词无限膨胀
+    status = models.CharField(max_length=16, choices=STATUS_CHOICES, default=STATUS_PENDING)
+    task_token = models.UUIDField(default=uuid.uuid4, editable=False)
+    error_message = models.TextField(blank=True)
+    keywords = models.JSONField(default=list, blank=True)  # 拓展出的全部长尾词
+    keyword_count = models.PositiveIntegerField(default=0)
+    processed_seeds = models.PositiveIntegerField(default=0)  # 已拓展的种子数
+    current_round = models.PositiveIntegerField(default=0)  # 当前 BFS 轮次（层数）
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-created_at"]

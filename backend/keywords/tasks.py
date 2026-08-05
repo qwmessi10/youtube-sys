@@ -1,6 +1,9 @@
-from celery import shared_task
+from collections import deque
 
-from .models import KeywordResult, KeywordRun
+from celery import shared_task
+from celery.exceptions import SoftTimeLimitExceeded
+
+from .models import KeywordResult, KeywordRun, SuggestExpansionRun
 from .services import (
     calculate_score,
     calculate_score_v2,
@@ -166,3 +169,89 @@ def _apply_betting_filter(run, all_keywords, run_id, task_token):
         result.rule_score = None
         result.save()
     return hit, intents
+
+
+def _expansion_can_continue(run_id, token):
+    """判断 Suggest 拓展任务是否还该继续（未被停止、token 未失效）。"""
+    run = SuggestExpansionRun.objects.only("status", "task_token").get(pk=run_id)
+    return run.status == SuggestExpansionRun.STATUS_RUNNING and str(run.task_token) == str(token)
+
+
+# Suggest 递归拓展可能跑很久（几千词、串行查询），单独放宽超时，不受全局 600s 限制。
+# soft_time_limit 会先抛可捕获的 SoftTimeLimitExceeded，让我们保存已拓词后优雅收尾；
+# time_limit（硬超时）再留 5 分钟缓冲兜底。
+@shared_task(bind=True, soft_time_limit=7200, time_limit=7500)
+def process_suggest_expansion(self, run_id, task_token):
+    """
+    对词根做 BFS 递归拓展：
+    队列初始为 [词根]，对每个种子直接查一次 Suggest API，
+    返回的词即为该种子的长尾词；新词加入已见集合并继续入队当种子，
+    直到队列空（再没有新的长尾词返回）或达到 max_keywords 上限。
+    轮次不限（current_round 仅作进度展示）。
+    到达时间上限时保存已拓展的词并标记完成，不丢结果。
+    """
+    run = SuggestExpansionRun.objects.get(pk=run_id)
+    if not _expansion_can_continue(run_id, task_token):
+        return
+    try:
+        seen = set()          # 已收集的全部长尾词（去重）
+        queue = deque()       # 待拓展的种子队列
+        # 词根本身先入队做种子，但不计入结果词（结果只要拓展出来的长尾词）
+        queue.append((run.root_keyword, 0))
+        processed = 0
+        max_kw = run.max_keywords or 5000
+
+        seeds_since_save = 0  # 距上次完整词表落库处理的种子数
+        while queue:
+            if not _expansion_can_continue(run_id, task_token):
+                return
+            seed, depth = queue.popleft()
+            reached_limit = False
+            # 直接用种子本身查一次，Suggest API 返回什么词就收什么词。
+            try:
+                suggestions = suggest_keywords(seed, run.country, run.language)
+            except Exception:
+                suggestions = []  # 单个查询失败跳过，不中断整体拓展
+            for kw in suggestions:
+                if kw in seen or kw == run.root_keyword:
+                    continue
+                seen.add(kw)
+                queue.append((kw, depth + 1))
+                if len(seen) >= max_kw:
+                    reached_limit = True
+                    break
+
+            processed += 1
+            seeds_since_save += 1
+            # 每处理完一个种子就刷新进度，让前端能看到词数实时增长。
+            run.keyword_count = len(seen)
+            run.processed_seeds = processed
+            run.current_round = depth + 1
+            if seeds_since_save >= 20:  # 完整词表较大，隔一批种子才落库一次
+                run.keywords = sorted(seen)
+                run.save(update_fields=["keywords", "keyword_count", "processed_seeds", "current_round", "updated_at"])
+                seeds_since_save = 0
+            else:
+                run.save(update_fields=["keyword_count", "processed_seeds", "current_round", "updated_at"])
+            if reached_limit:
+                break
+
+        if _expansion_can_continue(run_id, task_token):
+            run.status = SuggestExpansionRun.STATUS_COMPLETED
+            run.keywords = sorted(seen)
+            run.keyword_count = len(seen)
+            run.save(update_fields=["status", "keywords", "keyword_count", "updated_at"])
+    except SoftTimeLimitExceeded:
+        # 到达时间上限：已拓展的词是有效结果，保存并标记完成，不当作失败丢弃。
+        if _expansion_can_continue(run_id, task_token):
+            run.status = SuggestExpansionRun.STATUS_COMPLETED
+            run.keywords = sorted(seen)
+            run.keyword_count = len(seen)
+            run.error_message = f"达到时间上限，已保存前 {len(seen)} 个词后结束"
+            run.save(update_fields=["status", "keywords", "keyword_count", "error_message", "updated_at"])
+    except Exception as exc:
+        if _expansion_can_continue(run_id, task_token):
+            run.status = SuggestExpansionRun.STATUS_FAILED
+            run.error_message = str(exc)
+            run.save(update_fields=["status", "error_message", "updated_at"])
+        raise

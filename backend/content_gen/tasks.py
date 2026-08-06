@@ -1,8 +1,12 @@
 import os
+import time
 
 from celery import shared_task
 from celery.exceptions import SoftTimeLimitExceeded
 from django.conf import settings
+from django.utils import timezone
+
+from keywords.services import get_setting
 
 from .models import ContentItem, ContentRun
 from .services import generate_metadata, generate_storyboard, generate_thumbnail, merge_clips
@@ -18,43 +22,94 @@ def _generate_one_item(item, run):
     """
     单个关键词的 AI 生成：元数据 → 封面出图 → 分镜脚本。
     任一子步骤失败都记录到 item，但不同子步骤相互独立（封面失败不影响分镜）。
+    每一步的输入提示词、原始输出、解析结果、耗时都写进 gen_log，供前端日志抽屉展示。
     """
     item.status = ContentItem.STATUS_GENERATING
     item.error_message = ""
-    item.save(update_fields=["status", "error_message", "updated_at"])
+    # 重新生成时清空旧日志，steps 按执行顺序记录每一步的状态与详情。
+    log = {"keyword": item.keyword, "started_at": timezone.now().isoformat(), "steps": []}
+    item.gen_log = log
+    item.save(update_fields=["status", "error_message", "gen_log", "updated_at"])
 
     errors = []
 
+    def record(step, status, detail=None, error="", elapsed=None):
+        """往 gen_log.steps 追加一条步骤记录并立即落库，让前端能实时看到进度。"""
+        entry = {"step": step, "status": status, "at": timezone.now().isoformat()}
+        if elapsed is not None:
+            entry["elapsed_seconds"] = round(elapsed, 2)
+        if error:
+            entry["error"] = error
+        if detail:
+            entry.update(detail)
+        log["steps"].append(entry)
+        item.gen_log = log
+        item.save(update_fields=["gen_log", "updated_at"])
+
     # 1) 元数据（标题/描述/封面提示词）
+    record("metadata", "running")
+    started = time.monotonic()
     try:
-        meta, _ = generate_metadata(item.keyword)
+        meta, meta_log = generate_metadata(item.keyword)
         item.title = meta["title"]
         item.description = meta["description"]
         item.thumbnail_prompt = meta["thumbnail_prompt"]
+        record("metadata", "success", detail={
+            "model": meta_log.get("model"),
+            "prompt": meta_log.get("prompt"),
+            "raw_output": meta_log.get("raw_output"),
+            "parsed": meta_log.get("parsed"),
+            "title": meta["title"],
+            "description": meta["description"],
+            "thumbnail_prompt": meta["thumbnail_prompt"],
+        }, elapsed=time.monotonic() - started)
     except Exception as exc:
         errors.append(f"元数据生成失败：{exc}")
+        record("metadata", "failed", error=str(exc), elapsed=time.monotonic() - started)
 
     # 2) 封面出图（依赖上一步的封面提示词）
     if item.thumbnail_prompt:
+        record("thumbnail", "running", detail={"thumbnail_prompt": item.thumbnail_prompt})
+        started = time.monotonic()
         try:
             content_file, ext = generate_thumbnail(item.thumbnail_prompt)
             item.thumbnail_file.save(f"{run.id}_{item.id}.{ext}", content_file, save=False)
+            record("thumbnail", "success", detail={
+                "thumbnail_prompt": item.thumbnail_prompt,
+                "model": get_setting("GEMINI_IMAGE_MODEL", "gemini-3.1-flash-image"),
+            }, elapsed=time.monotonic() - started)
         except Exception as exc:
             errors.append(f"封面出图失败：{exc}")
+            record("thumbnail", "failed", detail={"thumbnail_prompt": item.thumbnail_prompt},
+                   error=str(exc), elapsed=time.monotonic() - started)
+    else:
+        record("thumbnail", "skipped", error="没有封面提示词，跳过出图")
 
     # 3) 分镜脚本（段数可变，默认 8+8）
+    record("storyboard", "running")
+    started = time.monotonic()
     try:
-        storyboard, _ = generate_storyboard(item.keyword, run.shot_count, run.shot_duration)
+        storyboard, sb_log = generate_storyboard(item.keyword, run.shot_count, run.shot_duration)
         item.storyboard = storyboard
+        record("storyboard", "success", detail={
+            "model": sb_log.get("model"),
+            "prompt": sb_log.get("prompt"),
+            "raw_output": sb_log.get("raw_output"),
+            "parsed": sb_log.get("parsed"),
+            "shots": storyboard.get("shots"),
+        }, elapsed=time.monotonic() - started)
     except Exception as exc:
         errors.append(f"分镜脚本生成失败：{exc}")
+        record("storyboard", "failed", error=str(exc), elapsed=time.monotonic() - started)
 
+    log["finished_at"] = timezone.now().isoformat()
     if errors:
         item.error_message = "；".join(errors)
         # 只要有任一产出就算「已生成」，全失败才标失败。
         item.status = ContentItem.STATUS_FAILED if len(errors) == 3 else ContentItem.STATUS_GENERATED
     else:
         item.status = ContentItem.STATUS_GENERATED
+    item.gen_log = log
     item.save()
 
 

@@ -102,6 +102,10 @@ class ContentItem(models.Model):
     clip_files = models.JSONField(default=list, blank=True)   # [{"index":1,"file":"content/.../x.mp4"}, ...]
     merged_file = models.FileField(upload_to="content/merged/", blank=True, null=True)
 
+    # 生成工作日志：两个 Agent 的完整输入提示词/原始输出/解析结果，封面出图提示词与结果，各步骤进度。
+    # 供前端「查看日志」抽屉展示，方便调试提示词、看封面提示词到底长啥样。
+    gen_log = models.JSONField(default=dict, blank=True)
+
     error_message = models.TextField(blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)

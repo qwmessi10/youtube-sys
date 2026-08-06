@@ -27,6 +27,10 @@ const selectedRun = ref();
 const selectedRunLabel = ref("");
 let pollTimer = null;
 
+// 生成日志抽屉
+const logDrawer = ref(false);
+const logItem = ref(null);
+
 const statusMeta = {
   pending: { label: "待处理", type: "info" },
   running: { label: "处理中", type: "warning" },
@@ -164,6 +168,34 @@ function downloadPackage(item) {
   window.open(`/api/content-items/${item.id}/package/`, "_blank");
 }
 
+// 打开某条记录的生成日志抽屉。运行中的记录 4 秒轮询也会刷新 items，抽屉内容跟着更新。
+async function openLog(item) {
+  logItem.value = item;
+  logDrawer.value = true;
+}
+
+// 步骤名 → 中文 + 状态色
+const stepMeta = {
+  metadata: "元数据生成",
+  thumbnail: "封面出图",
+  storyboard: "分镜脚本生成",
+};
+const stepStatusMeta = {
+  running: { label: "进行中", type: "warning" },
+  success: { label: "成功", type: "success" },
+  failed: { label: "失败", type: "danger" },
+  skipped: { label: "跳过", type: "info" },
+};
+const stepLabel = (s) => stepMeta[s] || s;
+const stepStatusLabel = (s) => stepStatusMeta[s]?.label || s;
+const stepStatusType = (s) => stepStatusMeta[s]?.type || "info";
+
+// 抽屉里始终展示 items 里最新的那条（轮询会更新 items），避免看到过期日志
+const logItemLive = computed(() => {
+  if (!logItem.value) return null;
+  return items.value.find((it) => it.id === logItem.value.id) || logItem.value;
+});
+
 // 已上传的分镜数（用于判断能否合并）
 function uploadedCount(item) {
   return (item.clip_files || []).length;
@@ -278,14 +310,79 @@ onUnmounted(stopPoll);
         <el-table-column prop="keyword" label="关键词" min-width="170" />
         <el-table-column label="状态" width="130"><template #default="{ row }"><el-tag :type="itemStatusType(row.status)" size="small" effect="light">{{ itemStatusLabel(row.status) }}</el-tag></template></el-table-column>
         <el-table-column label="标题" min-width="220" show-overflow-tooltip><template #default="{ row }">{{ row.title || "—" }}</template></el-table-column>
-        <el-table-column label="封面" width="90"><template #default="{ row }"><el-image v-if="row.thumbnail_url" :src="row.thumbnail_url" :preview-src-list="[row.thumbnail_url]" fit="cover" style="width: 48px; height: 48px; border-radius: 4px" /><span v-else>—</span></template></el-table-column>
-        <el-table-column label="成品" width="130"><template #default="{ row }">
+        <el-table-column label="封面" width="90"><template #default="{ row }"><el-image v-if="row.thumbnail_url" :src="row.thumbnail_url" :preview-src-list="[row.thumbnail_url]" :preview-teleported="true" fit="cover" style="width: 48px; height: 48px; border-radius: 4px" /><span v-else>—</span></template></el-table-column>
+        <el-table-column label="成品" width="120"><template #default="{ row }">
           <el-button v-if="row.merged_url" size="small" type="success" plain @click="downloadPackage(row)">下载成品包</el-button>
           <span v-else>—</span>
+        </template></el-table-column>
+        <el-table-column label="日志" width="80"><template #default="{ row }">
+          <el-button size="small" type="info" plain @click="openLog(row)">日志</el-button>
         </template></el-table-column>
       </el-table>
       <el-pagination v-model:current-page="itemPage" class="pagination" layout="total, prev, pager, next" :page-size="10" :total="itemTotal" @current-change="loadItems" />
     </el-card>
+
+    <el-drawer v-model="logDrawer" title="生成工作日志" size="720px" :destroy-on-close="true">
+      <div v-if="logItemLive">
+        <div class="log-head">
+          <el-tag :type="itemStatusType(logItemLive.status)" effect="light">{{ itemStatusLabel(logItemLive.status) }}</el-tag>
+          <span class="log-root">关键词：{{ logItemLive.keyword }}</span>
+        </div>
+        <el-alert v-if="logItemLive.error_message" :title="logItemLive.error_message" type="warning" :closable="false" class="process-note" />
+
+        <template v-if="logItemLive.gen_log && logItemLive.gen_log.steps && logItemLive.gen_log.steps.length">
+          <el-timeline class="log-timeline">
+            <el-timeline-item
+              v-for="(step, i) in logItemLive.gen_log.steps"
+              :key="i"
+              :type="stepStatusType(step.status)"
+              :timestamp="step.elapsed_seconds !== undefined ? `耗时 ${step.elapsed_seconds}s` : ''"
+            >
+              <div class="log-step-head">
+                <strong>{{ stepLabel(step.step) }}</strong>
+                <el-tag size="small" :type="stepStatusType(step.status)" effect="plain">{{ stepStatusLabel(step.status) }}</el-tag>
+                <span v-if="step.model" class="log-model">模型：{{ step.model }}</span>
+              </div>
+              <el-alert v-if="step.error" :title="step.error" type="error" :closable="false" class="process-note" />
+
+              <!-- 封面出图：重点展示封面提示词 -->
+              <template v-if="step.step === 'thumbnail' && step.thumbnail_prompt">
+                <p class="log-line">封面提示词：</p>
+                <pre class="log-pre">{{ step.thumbnail_prompt }}</pre>
+              </template>
+
+              <!-- 元数据 / 分镜：展示 AI 输入输出 -->
+              <el-collapse v-if="step.prompt || step.raw_output || step.parsed" class="log-collapse">
+                <el-collapse-item v-if="step.title" title="生成的标题 / 描述 / 封面提示词" name="meta">
+                  <p class="log-line"><strong>标题：</strong>{{ step.title }}</p>
+                  <p class="log-line"><strong>描述：</strong></p>
+                  <pre class="log-pre">{{ step.description }}</pre>
+                  <p class="log-line"><strong>封面提示词：</strong></p>
+                  <pre class="log-pre">{{ step.thumbnail_prompt }}</pre>
+                </el-collapse-item>
+                <el-collapse-item v-if="step.shots" title="分镜内容" name="shots">
+                  <div v-for="shot in step.shots" :key="shot.index" class="log-shot">
+                    <strong>分镜 {{ shot.index }}（{{ shot.duration }}s）</strong>
+                    <p class="log-line">画面：{{ shot.scene }}</p>
+                    <p class="log-line">提示词：{{ shot.prompt }}</p>
+                  </div>
+                </el-collapse-item>
+                <el-collapse-item v-if="step.prompt" title="Agent 输入 Prompt" name="prompt">
+                  <pre class="log-pre">{{ step.prompt }}</pre>
+                </el-collapse-item>
+                <el-collapse-item v-if="step.raw_output" title="Agent 原始输出" name="raw">
+                  <pre class="log-pre">{{ step.raw_output }}</pre>
+                </el-collapse-item>
+                <el-collapse-item v-if="step.parsed" title="解析后结构" name="parsed">
+                  <pre class="log-pre">{{ JSON.stringify(step.parsed, null, 2) }}</pre>
+                </el-collapse-item>
+              </el-collapse>
+            </el-timeline-item>
+          </el-timeline>
+        </template>
+        <el-empty v-else description="暂无生成日志（任务可能尚未开始或为旧数据）" :image-size="60" />
+      </div>
+    </el-drawer>
   </div>
 </template>
 
@@ -300,5 +397,15 @@ onUnmounted(stopPoll);
 .merged-preview { max-width: 240px; max-height: 420px; margin-top: 8px; border-radius: 6px; display: block; }
 .agent-hint { color: #909399; font-size: 12px; display: block; margin-top: 4px; }
 .process-note { margin-bottom: 12px; }
+.log-head { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
+.log-root { color: #606266; font-size: 13px; }
+.log-timeline { padding-top: 4px; }
+.log-step-head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; flex-wrap: wrap; }
+.log-model { color: #909399; font-size: 12px; }
+.log-line { margin: 4px 0; line-height: 1.5; word-break: break-word; }
+.log-pre { white-space: pre-wrap; word-break: break-word; background: #f5f7fa; border-radius: 6px; padding: 8px 10px; margin: 4px 0; font-size: 12px; line-height: 1.5; max-height: 320px; overflow: auto; }
+.log-collapse { margin-top: 6px; }
+.log-shot { margin-bottom: 10px; padding-bottom: 8px; border-bottom: 1px dashed #ebeef5; }
+.log-shot:last-child { border-bottom: none; }
 </style>
 

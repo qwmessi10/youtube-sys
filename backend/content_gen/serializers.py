@@ -62,7 +62,7 @@ class ContentItemSerializer(serializers.ModelSerializer):
         fields = [
             "id", "run", "run_name", "keyword", "status", "title", "description",
             "thumbnail_prompt", "thumbnail_url", "storyboard", "clip_files",
-            "merged_url", "error_message", "created_at", "updated_at",
+            "merged_url", "gen_log", "error_message", "created_at", "updated_at",
         ]
 
     def get_thumbnail_url(self, obj):

@@ -5,7 +5,8 @@ import { ElMessage } from "element-plus";
 import ContentTasks from "./components/ContentTasks.vue";
 import ContentAgents from "./components/ContentAgents.vue";
 
-const activeMenu = ref("tasks");
+// 当前菜单从 localStorage 恢复，刷新后停留在原页面而不是跳回默认。
+const activeMenu = ref(localStorage.getItem("activeMenu") || "tasks");
 // 从关键词结果页「送入内容生成」带过来的关键词，传给内容任务组件预填。
 const injectedKeywords = ref([]);
 const loading = ref(false);
@@ -319,8 +320,9 @@ onMounted(async () => {
 
 onUnmounted(() => stopSePoll());
 
-// 离开工具页时停止轮询，进入时刷新一次
+// 离开工具页时停止轮询，进入时刷新一次；同时记住当前菜单，刷新后不跳转。
 watch(activeMenu, (menu) => {
+  localStorage.setItem("activeMenu", menu);
   if (menu === "suggest-expand") loadSeRuns();
   else stopSePoll();
 });

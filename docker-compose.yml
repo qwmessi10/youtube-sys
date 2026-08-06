@@ -43,6 +43,14 @@ services:
       backend:
         condition: service_started
 
+  # 流程一：Remotion 渲染服务（Node + 无头 Chromium）。worker 通过 HTTP 触发，
+  # 封面/音频/成品经共享 media 卷交换（路径与 backend/worker 一致：/app/media）。
+  render:
+    build: ./render
+    volumes:
+      - media_data:/app/media
+    # 仅供内网调用，不对外暴露端口
+
   frontend:
     build: ./frontend
     ports:

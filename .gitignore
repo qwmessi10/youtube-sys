@@ -6,6 +6,8 @@ db.sqlite3
 staticfiles/
 frontend/node_modules/
 frontend/dist/
+render/node_modules/
+render/out/
 .pytest_cache/
 
 # 后续需求笔记，暂不纳入仓库

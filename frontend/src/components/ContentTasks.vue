@@ -11,7 +11,11 @@ const props = defineProps({
   injectedKeywords: { type: Array, default: () => [] },
 });
 
-const form = ref({ name: "", country: "US", language: "en", shot_count: 2, shot_duration: 8, keywordsText: "" });
+const form = ref({
+  name: "", flow: "flow2", country: "US", language: "en",
+  shot_count: 2, shot_duration: 8, keywordsText: "",
+  promo_code: "", tts_provider: "edge",   // 流程一专用
+});
 const creating = ref(false);
 const runs = ref([]);
 const runTotal = ref(0);
@@ -45,6 +49,8 @@ const itemStatusMeta = {
   generated: { label: "待上传视频", type: "primary" },
   merging: { label: "合并中", type: "warning" },
   merged: { label: "已合并成品", type: "success" },
+  rendering: { label: "渲染中", type: "warning" },
+  rendered: { label: "已渲染成品", type: "success" },
   failed: { label: "生成失败", type: "danger" },
 };
 const statusLabel = (s) => statusMeta[s]?.label || s;
@@ -79,25 +85,42 @@ async function loadItems(page = itemPage.value) {
   itemTotal.value = data.count;
 }
 
+const isFlow1 = computed(() => form.value.flow === "flow1");
+
 async function createRun() {
   const keywords = parsedKeywords.value;
   if (keywords.length === 0) return ElMessage.warning("请至少输入一个关键词");
+  // 流程一（全自动）必须填优惠码，渲染时注入视频模板。
+  if (isFlow1.value && !form.value.promo_code.trim()) {
+    return ElMessage.warning("流程一（全自动）需填写优惠码");
+  }
   creating.value = true;
   try {
-    await axios.post("/api/content-runs/", {
+    const payload = {
       name: form.value.name,
+      flow: form.value.flow,
       country: form.value.country,
       language: form.value.language,
       shot_count: form.value.shot_count,
       shot_duration: form.value.shot_duration,
       keywords,
-    });
-    ElMessage.success(`任务已创建，正在为 ${keywords.length} 个关键词生成内容`);
+    };
+    // 流程一附带优惠码与 TTS 引擎
+    if (isFlow1.value) {
+      payload.promo_code = form.value.promo_code.trim();
+      payload.tts_provider = form.value.tts_provider;
+    }
+    await axios.post("/api/content-runs/", payload);
+    const tip = isFlow1.value ? "，将自动完成配音与视频渲染" : "";
+    ElMessage.success(`任务已创建，正在为 ${keywords.length} 个关键词生成内容${tip}`);
     form.value.keywordsText = "";
     form.value.name = "";
     await loadRuns(1);
   } catch (error) {
-    ElMessage.error(error.response?.data?.detail || "创建任务失败，请检查输入");
+    const data = error.response?.data;
+    // 后端字段级校验（如 promo_code）也能提示出来
+    const msg = data?.detail || (data?.promo_code && data.promo_code[0]) || "创建任务失败，请检查输入";
+    ElMessage.error(msg);
   } finally {
     creating.value = false;
   }
@@ -168,6 +191,11 @@ function downloadPackage(item) {
   window.open(`/api/content-items/${item.id}/package/`, "_blank");
 }
 
+// 成品视频地址：流程二取合并成品，流程一取 Remotion 渲染成品。
+function finalUrl(item) {
+  return item.merged_url || item.rendered_url || "";
+}
+
 // 打开某条记录的生成日志抽屉。运行中的记录 4 秒轮询也会刷新 items，抽屉内容跟着更新。
 async function openLog(item) {
   logItem.value = item;
@@ -179,6 +207,8 @@ const stepMeta = {
   metadata: "元数据生成",
   thumbnail: "封面出图",
   storyboard: "分镜脚本生成",
+  narration: "旁白配音（TTS）",
+  render: "视频渲染（Remotion）",
 };
 const stepStatusMeta = {
   running: { label: "进行中", type: "warning" },
@@ -231,6 +261,17 @@ onUnmounted(stopPoll);
     <el-card class="create-card" shadow="never">
       <template #header><strong>创建内容生成任务</strong></template>
       <el-form label-position="top" @submit.prevent="createRun">
+        <el-form-item label="生成流程">
+          <el-radio-group v-model="form.flow">
+            <el-radio-button label="flow2">流程二 · 半自动（AI 出内容，人工上传视频合并）</el-radio-button>
+            <el-radio-button label="flow1">流程一 · 全自动（AI 配音 + 自动渲染视频）</el-radio-button>
+          </el-radio-group>
+        </el-form-item>
+        <el-alert
+          v-if="isFlow1"
+          title="流程一会在生成标题/描述/封面/分镜脚本后，自动为每段分镜配旁白语音，再用 Remotion 渲染出竖屏成品视频，无需人工上传。当前模板为纯文字动效版，后续可精细化。"
+          type="warning" :closable="false" class="process-note" show-icon
+        />
         <el-form-item label="关键词（每行一个，或用逗号分隔；可从关键词结果页一键送入）">
           <el-input v-model="form.keywordsText" type="textarea" :autosize="{ minRows: 3, maxRows: 10 }" placeholder="例如：&#10;1xbet promo code&#10;betwinner bonus" />
           <small class="agent-hint">当前解析出 {{ parsedKeywords.length }} 个关键词，每个关键词生成一条内容记录。</small>
@@ -241,6 +282,9 @@ onUnmounted(stopPoll);
           <el-form-item label="内容语言"><el-select v-model="form.language" filterable style="width: 150px"><el-option v-for="item in options.languages" :key="item.value" :label="`${item.label} (${item.value})`" :value="item.value" /></el-select></el-form-item>
           <el-form-item label="分镜段数"><el-input-number v-model="form.shot_count" :min="1" :max="10" /></el-form-item>
           <el-form-item label="每段时长(秒)"><el-input-number v-model="form.shot_duration" :min="1" :max="60" /></el-form-item>
+          <!-- 流程一专属：优惠码 + 配音引擎 -->
+          <el-form-item v-if="isFlow1" label="优惠码（注入视频）"><el-input v-model="form.promo_code" placeholder="必填，如 NEW100" style="width: 160px" /></el-form-item>
+          <el-form-item v-if="isFlow1" label="配音引擎"><el-select v-model="form.tts_provider" style="width: 170px"><el-option label="Edge TTS（免费）" value="edge" /><el-option label="ElevenLabs（付费）" value="elevenlabs" /></el-select></el-form-item>
           <el-form-item label=" "><el-button type="primary" :loading="creating" @click="createRun">开始生成</el-button></el-form-item>
         </el-form>
       </el-form>
@@ -250,6 +294,7 @@ onUnmounted(stopPoll);
       <template #header><div class="card-title"><strong>任务记录</strong><div><el-input v-model="runSearch" clearable placeholder="搜索任务名/关键词" class="search-input" @keyup.enter="loadRuns(1)" @clear="loadRuns(1)" /><el-button @click="loadRuns(1)">搜索</el-button></div></div></template>
       <el-table :data="runs" size="small" empty-text="暂无任务" class="clickable-table" @row-click="selectRun">
         <el-table-column label="任务" min-width="160"><template #default="{ row }">{{ row.name || `任务 #${row.id}` }}</template></el-table-column>
+        <el-table-column label="流程" width="110"><template #default="{ row }"><el-tag size="small" :type="row.flow === 'flow1' ? 'warning' : 'info'" effect="plain">{{ row.flow === 'flow1' ? '全自动' : '半自动' }}</el-tag></template></el-table-column>
         <el-table-column prop="country" label="国家" width="70" />
         <el-table-column prop="language" label="语言" width="80" />
         <el-table-column label="分镜" width="90"><template #default="{ row }">{{ row.shot_count }}×{{ row.shot_duration }}s</template></el-table-column>
@@ -267,7 +312,7 @@ onUnmounted(stopPoll);
 
     <el-card shadow="never" class="table-card">
       <template #header><div class="card-title"><div><strong>内容记录</strong><el-tag v-if="selectedRun" class="run-filter-tag" closable type="primary" @close="clearRunFilter"> 当前任务：{{ selectedRunLabel }}</el-tag></div><div><el-input v-model="itemSearch" clearable placeholder="搜索关键词" class="search-input" @keyup.enter="loadItems(1)" @clear="loadItems(1)" /><el-button @click="loadItems(1)">搜索</el-button><el-button @click="loadItems">刷新</el-button></div></div></template>
-      <el-alert title="每条记录先由 AI 生成标题/描述/封面/分镜脚本；再人工上传分镜视频，点合并出成品，最后一键打包下载。" type="info" :closable="false" class="process-note" />
+      <el-alert title="流程二（半自动）：AI 生成标题/描述/封面/分镜脚本 → 人工上传分镜视频 → 合并成品 → 打包下载。流程一（全自动）：AI 生成内容后自动配音 + Remotion 渲染出成品，直接打包下载。展开每行查看详情。" type="info" :closable="false" class="process-note" />
       <el-table :data="items" stripe v-loading="loading" empty-text="创建任务后在此查看内容记录">
         <el-table-column type="expand" width="40"><template #default="{ row }">
           <div class="item-detail">
@@ -288,9 +333,12 @@ onUnmounted(stopPoll);
               <el-table :data="row.storyboard.shots" border size="small">
                 <el-table-column prop="index" label="#" width="48" />
                 <el-table-column prop="duration" label="时长" width="70"><template #default="{ row: s }">{{ s.duration }}s</template></el-table-column>
-                <el-table-column prop="scene" label="画面描述" min-width="200" />
-                <el-table-column prop="prompt" label="生成提示词（复制到 AI 视频工具）" min-width="260" />
-                <el-table-column label="上传该段视频" width="150"><template #default="{ row: s }">
+                <el-table-column prop="scene" label="画面描述" min-width="180" />
+                <!-- 流程一：展示旁白文案；流程二：展示生成提示词供复制到 AI 视频工具 -->
+                <el-table-column v-if="row.run_flow === 'flow1'" label="旁白文案（自动配音）" min-width="260"><template #default="{ row: s }">{{ s.narration || "—" }}</template></el-table-column>
+                <el-table-column v-else prop="prompt" label="生成提示词（复制到 AI 视频工具）" min-width="260" />
+                <!-- 流程二才需要人工上传分镜视频 -->
+                <el-table-column v-if="row.run_flow !== 'flow1'" label="上传该段视频" width="150"><template #default="{ row: s }">
                   <el-upload :show-file-list="false" :auto-upload="false" accept="video/*" :on-change="(f) => onClipChange(row, s.index, f)">
                     <el-button size="small" plain>上传分镜 {{ s.index }}</el-button>
                   </el-upload>
@@ -298,13 +346,22 @@ onUnmounted(stopPoll);
               </el-table>
             </div>
 
-            <div class="clip-status">
+            <!-- 流程二：人工上传分镜 + 合并 -->
+            <div v-if="row.run_flow !== 'flow1'" class="clip-status">
               <span>已上传分镜：{{ uploadedCount(row) }} / {{ row.storyboard?.shots?.length || 0 }} 段</span>
               <el-tag v-for="c in (row.clip_files || [])" :key="c.index" size="small" type="success" effect="plain">分镜{{ c.index }}：{{ c.name }}</el-tag>
               <el-button size="small" type="primary" :disabled="uploadedCount(row) === 0 || row.status === 'merging'" @click="mergeItem(row)">合并成品</el-button>
               <el-button v-if="row.merged_url" size="small" type="success" plain @click="downloadPackage(row)">下载成品包</el-button>
             </div>
-            <video v-if="row.merged_url" :src="row.merged_url" controls class="merged-preview" />
+            <!-- 流程一：全自动渲染，展示成品状态 -->
+            <div v-else class="clip-status">
+              <el-tag v-if="row.status === 'rendering'" type="warning" effect="light">正在自动配音并渲染视频…</el-tag>
+              <template v-if="row.rendered_url">
+                <el-tag type="success" effect="plain">已渲染成品</el-tag>
+                <el-button size="small" type="success" plain @click="downloadPackage(row)">下载成品包</el-button>
+              </template>
+            </div>
+            <video v-if="finalUrl(row)" :src="finalUrl(row)" controls class="merged-preview" />
           </div>
         </template></el-table-column>
         <el-table-column prop="keyword" label="关键词" min-width="170" />
@@ -312,7 +369,7 @@ onUnmounted(stopPoll);
         <el-table-column label="标题" min-width="220" show-overflow-tooltip><template #default="{ row }">{{ row.title || "—" }}</template></el-table-column>
         <el-table-column label="封面" width="90"><template #default="{ row }"><el-image v-if="row.thumbnail_url" :src="row.thumbnail_url" :preview-src-list="[row.thumbnail_url]" :preview-teleported="true" fit="cover" style="width: 48px; height: 48px; border-radius: 4px" /><span v-else>—</span></template></el-table-column>
         <el-table-column label="成品" width="120"><template #default="{ row }">
-          <el-button v-if="row.merged_url" size="small" type="success" plain @click="downloadPackage(row)">下载成品包</el-button>
+          <el-button v-if="finalUrl(row)" size="small" type="success" plain @click="downloadPackage(row)">下载成品包</el-button>
           <span v-else>—</span>
         </template></el-table-column>
         <el-table-column label="日志" width="80"><template #default="{ row }">
@@ -349,6 +406,22 @@ onUnmounted(stopPoll);
               <template v-if="step.step === 'thumbnail' && step.thumbnail_prompt">
                 <p class="log-line">封面提示词：</p>
                 <pre class="log-pre">{{ step.thumbnail_prompt }}</pre>
+              </template>
+
+              <!-- 旁白配音（流程一）：展示每段配音结果 -->
+              <template v-if="step.step === 'narration' && step.segments">
+                <p class="log-line">配音引擎：{{ step.provider }}，成功 {{ step.audio_count }} 段</p>
+                <div v-for="seg in step.segments" :key="seg.index" class="log-line">
+                  分镜 {{ seg.index }}：
+                  <el-tag size="small" :type="seg.status === 'skipped' ? 'danger' : 'success'" effect="plain">{{ seg.status }}</el-tag>
+                  <span v-if="seg.provider" class="log-model">实际引擎 {{ seg.provider }}</span>
+                  <span v-if="seg.error" class="log-model">{{ seg.error }}</span>
+                </div>
+              </template>
+
+              <!-- 视频渲染（流程一）：展示渲染成品信息 -->
+              <template v-if="step.step === 'render' && step.status === 'success'">
+                <p class="log-line">成品：{{ step.output }}（{{ step.duration_in_frames }} 帧）</p>
               </template>
 
               <!-- 元数据 / 分镜：展示 AI 输入输出 -->

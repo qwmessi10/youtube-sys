@@ -2,8 +2,12 @@
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import axios from "axios";
 import { ElMessage } from "element-plus";
+import ContentTasks from "./components/ContentTasks.vue";
+import ContentAgents from "./components/ContentAgents.vue";
 
 const activeMenu = ref("tasks");
+// 从关键词结果页「送入内容生成」带过来的关键词，传给内容任务组件预填。
+const injectedKeywords = ref([]);
 const loading = ref(false);
 const settings = ref([]);
 const runs = ref([]);
@@ -34,8 +38,17 @@ const seDetail = ref(null);        // 当前查看的任务详情（含词列表
 const seDetailLoading = ref(false);
 let sePollTimer = null;            // 运行中任务的进度轮询定时器
 
-const menuTitles = { tasks: "任务管理", agents: "关键词 Agent 管理", "suggest-expand": "获取 Suggest API 长尾词", settings: "全局设置" };
+const menuTitles = {
+  tasks: "任务管理", agents: "关键词 Agent 管理", "suggest-expand": "获取 Suggest API 长尾词",
+  "content-tasks": "内容生成 - 任务管理", "content-agents": "内容生成 Agent 管理", settings: "全局设置",
+};
 const menuTitle = computed(() => menuTitles[activeMenu.value] || "关键词系统");
+
+// 把选中的关键词送入内容生成：填充关键词并切到内容任务页。
+function sendToContent(item) {
+  injectedKeywords.value = [item.keyword];
+  activeMenu.value = "content-tasks";
+}
 
 // Suggest 拓展任务状态 → 文案 + 标签色
 const seStatusMeta = {
@@ -321,7 +334,7 @@ watch(activeMenu, (menu) => {
         :default-active="activeMenu"
         @select="activeMenu = $event"
         class="menu"
-        :default-openeds="['keywords', 'tools']"
+        :default-openeds="['keywords', 'content', 'tools']"
         background-color="#17212d"
         text-color="#b6c5d4"
         active-text-color="#ffffff"
@@ -331,13 +344,17 @@ watch(activeMenu, (menu) => {
           <el-menu-item index="tasks">任务管理</el-menu-item>
           <el-menu-item index="agents">关键词 Agent 管理</el-menu-item>
         </el-sub-menu>
+        <el-sub-menu index="content">
+          <template #title>内容生成系统</template>
+          <el-menu-item index="content-tasks">任务管理</el-menu-item>
+          <el-menu-item index="content-agents">内容生成 Agent 管理</el-menu-item>
+        </el-sub-menu>
         <el-sub-menu index="tools">
           <template #title>实用工具</template>
           <el-menu-item index="suggest-expand">获取 Suggest API 长尾词</el-menu-item>
         </el-sub-menu>
         <el-menu-item index="settings">全局设置</el-menu-item>
         <el-menu-item disabled index="data">数据抓取系统（后续）</el-menu-item>
-        <el-menu-item disabled index="content">内容生成系统（后续）</el-menu-item>
         <el-menu-item disabled index="adspower">AdsPower 自动化（隔离）</el-menu-item>
       </el-menu>
     </el-aside>
@@ -387,7 +404,8 @@ watch(activeMenu, (menu) => {
               <el-table-column prop="rule_score" label="总分" width="78" sortable />
               <el-table-column label="状态" width="150"><template #default="{ row }"><el-tag :type="statusType(row.status)" size="small" effect="light">{{ statusLabel(row.status) }}</el-tag></template></el-table-column>
               <el-table-column label="评分过程" min-width="360"><template #default="{ row }"><span v-for="(score, key) in row.score_breakdown" :key="key" class="score">{{ scoreLabels[key] || key }}：{{ score }}</span></template></el-table-column>
-              <el-table-column prop="elimination_reason" label="说明" min-width="210" show-overflow-tooltip />
+              <el-table-column prop="elimination_reason" label="说明" min-width="180" show-overflow-tooltip />
+              <el-table-column label="操作" width="130"><template #default="{ row }"><el-button size="small" type="primary" plain @click="sendToContent(row)">送入内容生成</el-button></template></el-table-column>
             </el-table>
             <el-pagination v-model:current-page="resultPage" class="pagination" layout="total, prev, pager, next" :page-size="10" :total="resultTotal" @current-change="loadResults" />
           </el-card>
@@ -485,6 +503,8 @@ watch(activeMenu, (menu) => {
             <el-empty v-if="!seDetail.keywords || seDetail.keywords.length === 0" description="暂无长尾词" :image-size="60" />
           </el-card>
         </template>
+        <ContentTasks v-else-if="activeMenu === 'content-tasks'" :options="options" :injected-keywords="injectedKeywords" />
+        <ContentAgents v-else-if="activeMenu === 'content-agents'" />
         <el-card v-else-if="activeMenu === 'settings'" shadow="never">
           <template #header><strong>第三方 API 与 AI 接入配置</strong></template>
           <p class="hint">保存后将优先使用这里的值；AI 配置已预留，第一期不会调用 AI。</p>

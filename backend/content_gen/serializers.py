@@ -1,0 +1,72 @@
+from rest_framework import serializers
+
+from keywords.serializers import COUNTRIES, LANGUAGES
+
+from .models import ContentAgent, ContentItem, ContentRun
+
+
+class ContentAgentSerializer(serializers.ModelSerializer):
+    agent_type_label = serializers.CharField(source="get_agent_type_display", read_only=True)
+
+    class Meta:
+        model = ContentAgent
+        # 名称/用途/类型是固定身份，只允许改 prompt 和 enabled（同关键词 Agent 管理）。
+        fields = ["id", "agent_type", "agent_type_label", "name", "description", "prompt", "enabled", "updated_at"]
+        read_only_fields = ["agent_type", "name", "description"]
+
+
+class ContentRunSerializer(serializers.ModelSerializer):
+    item_count = serializers.IntegerField(source="items.count", read_only=True)
+
+    class Meta:
+        model = ContentRun
+        fields = [
+            "id", "name", "country", "language", "shot_count", "shot_duration",
+            "status", "error_message", "item_count", "created_at", "updated_at",
+        ]
+        read_only_fields = ["status", "error_message"]
+
+    def validate_country(self, value):
+        if value not in dict(COUNTRIES):
+            raise serializers.ValidationError("请选择列表中的国家。")
+        return value
+
+    def validate_language(self, value):
+        if value not in dict(LANGUAGES):
+            raise serializers.ValidationError("请选择列表中的语言。")
+        return value
+
+    def validate_shot_count(self, value):
+        if value < 1 or value > 10:
+            raise serializers.ValidationError("分镜段数需在 1~10 之间。")
+        return value
+
+
+class ContentRunCreateSerializer(ContentRunSerializer):
+    """创建任务用：额外接收 keywords 列表（每个关键词生成一条 ContentItem）。"""
+    keywords = serializers.ListField(
+        child=serializers.CharField(max_length=255), write_only=True, allow_empty=False,
+    )
+
+    class Meta(ContentRunSerializer.Meta):
+        fields = ContentRunSerializer.Meta.fields + ["keywords"]
+
+
+class ContentItemSerializer(serializers.ModelSerializer):
+    run_name = serializers.CharField(source="run.name", read_only=True)
+    thumbnail_url = serializers.SerializerMethodField()
+    merged_url = serializers.SerializerMethodField()
+
+    class Meta:
+        model = ContentItem
+        fields = [
+            "id", "run", "run_name", "keyword", "status", "title", "description",
+            "thumbnail_prompt", "thumbnail_url", "storyboard", "clip_files",
+            "merged_url", "error_message", "created_at", "updated_at",
+        ]
+
+    def get_thumbnail_url(self, obj):
+        return obj.thumbnail_file.url if obj.thumbnail_file else ""
+
+    def get_merged_url(self, obj):
+        return obj.merged_file.url if obj.merged_file else ""

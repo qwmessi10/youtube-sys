@@ -25,6 +25,8 @@ services:
     command: sh -c "python manage.py migrate && gunicorn config.wsgi:application --bind 0.0.0.0:8000 --workers 3"
     ports:
       - "127.0.0.1:8000:8000"
+    volumes:
+      - media_data:/app/media   # 上传视频/封面/成品，与 worker、nginx 共享
     depends_on:
       db:
         condition: service_healthy
@@ -35,6 +37,8 @@ services:
     build: ./backend
     env_file: .env
     command: celery -A config worker --loglevel=INFO
+    volumes:
+      - media_data:/app/media   # worker 生成封面、合并成品，写入同一卷
     depends_on:
       backend:
         condition: service_started
@@ -43,6 +47,8 @@ services:
     build: ./frontend
     ports:
       - "8080:80"
+    volumes:
+      - media_data:/usr/share/nginx/media:ro   # nginx 直接托管 media 静态文件
     depends_on:
       backend:
         condition: service_started
@@ -50,3 +56,4 @@ services:
 volumes:
   postgres_data:
   redis_data:
+  media_data:

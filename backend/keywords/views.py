@@ -27,6 +27,8 @@ DEFAULT_SETTINGS = [
     ("AI_BASE_URL", "AI 接口地址（OpenAI 兼容中转，如 moretokens）"),
     ("AI_API_KEY", "AI API Key（打分模型 2.0 博彩意图筛选使用）"),
     ("AI_MODEL", "AI 模型名，2.0 默认 gemini-3.6-flash-medium"),
+    ("GEMINI_IMAGE_API_KEY", "内容生成-封面出图 API Key（留空则复用 AI_API_KEY）"),
+    ("GEMINI_IMAGE_MODEL", "内容生成-封面图片模型名，默认 gemini-3.1-flash-image"),
 ]
 
 SCORE_LABELS = {

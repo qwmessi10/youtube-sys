@@ -211,9 +211,10 @@ class ContentItemViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, views
             # 封面
             if item.thumbnail_file and os.path.exists(item.thumbnail_file.path):
                 zf.write(item.thumbnail_file.path, f"cover{os.path.splitext(item.thumbnail_file.name)[1]}")
-            # 成品视频
-            if item.merged_file and os.path.exists(item.merged_file.path):
-                zf.write(item.merged_file.path, "final_video.mp4")
+            # 成品视频：流程二取合并成品，流程一取 Remotion 渲染成品。
+            final_file = item.merged_file or item.rendered_file
+            if final_file and os.path.exists(final_file.path):
+                zf.write(final_file.path, "final_video.mp4")
         buffer.seek(0)
         response = HttpResponse(buffer.getvalue(), content_type="application/zip")
         response["Content-Disposition"] = f'attachment; filename="content_{item.id}_{timezone.now():%Y%m%d}.zip"'

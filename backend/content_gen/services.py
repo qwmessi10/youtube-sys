@@ -385,3 +385,67 @@ def _merge_clips_video_only(clip_paths, output_path, target_w, target_h, fps):
     if result.returncode != 0:
         raise RuntimeError(f"ffmpeg 合并失败：{result.stderr[-500:]}")
     return output_path
+
+
+# ---------------------------------------------------------------------------
+# 流程一：调用 Remotion 渲染服务，把封面 + 分镜字幕 + 旁白音频合成为竖屏成品视频。
+# ---------------------------------------------------------------------------
+def render_video(*, title, keyword, promo_code, cover_abs_path, shots,
+                 narration_audio, output_abs_path, render_url=None, timeout=1200):
+    """
+    通过 HTTP 调用 render 容器的 Remotion 服务渲染成品视频。
+
+    参数都用 render 容器可见的绝对路径（共享卷 /app/media/...），
+    render 服务内部会把这些绝对路径改写成 HTTP URL 供 Chromium 加载。
+
+    - title / keyword / promo_code：注入模板的文字
+    - cover_abs_path：封面图绝对路径（可为空，空则模板用纯色背景）
+    - shots：分镜列表 [{"index","duration","scene","narration"}, ...]
+    - narration_audio：旁白音频列表 [{"index","file":"<绝对路径>","provider"}, ...]
+    - output_abs_path：成品 mp4 输出绝对路径（render 容器写入共享卷）
+
+    返回 render 服务响应 dict（含 durationInFrames）。失败抛异常。
+    """
+    render_url = render_url or get_setting("REMOTION_RENDER_URL", "http://render:3000/render")
+
+    # 把每段旁白音频按 index 映射，拼进 shots，供模板逐段播放。
+    audio_by_index = {a.get("index"): a.get("file") for a in (narration_audio or [])}
+    total_duration = 0
+    prop_shots = []
+    for shot in shots or []:
+        idx = shot.get("index")
+        duration = shot.get("duration") or 8
+        total_duration += duration
+        prop_shots.append({
+            "index": idx,
+            "duration": duration,
+            "scene": (shot.get("scene") or "").strip(),
+            "narration": (shot.get("narration") or "").strip(),
+            "audioSrc": audio_by_index.get(idx, ""),
+        })
+
+    input_props = {
+        "title": title or "",
+        "keyword": keyword or "",
+        "promoCode": promo_code or "",
+        "coverSrc": cover_abs_path or "",
+        "totalDuration": total_duration or 16,
+        "shots": prop_shots,
+    }
+
+    resp = requests.post(
+        render_url,
+        json={"inputProps": input_props, "outPath": output_abs_path},
+        timeout=timeout,
+    )
+    if resp.status_code != 200:
+        # 尽量把 render 服务返回的错误信息带出来，便于排查
+        try:
+            detail = resp.json().get("error")
+        except Exception:
+            detail = resp.text[:500]
+        raise RuntimeError(f"Remotion 渲染失败（HTTP {resp.status_code}）：{detail}")
+    data = resp.json()
+    if not data.get("ok"):
+        raise RuntimeError(f"Remotion 渲染失败：{data.get('error')}")
+    return data

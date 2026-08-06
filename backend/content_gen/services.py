@@ -58,6 +58,14 @@ STORYBOARD_OUTPUT_SPEC = """严格只输出一个 JSON 对象，不要输出任�
 {{"keyword": "原样的关键词", "total_duration": {total_duration}, "shots": [{{"index": 1, "duration": {shot_duration}, "scene": "分镜画面描述", "prompt": "用于外部 AI 视频工具的英文生成提示词"}}]}}
 shots 数组必须恰好包含 {shot_count} 个元素，index 从 1 递增。"""
 
+# 流程一（全自动）额外要求每段旁白文案 narration。旁白由 TTS 转音频，必须控制字数
+# 以贴合每段时长（约每秒 2.5 个英文词，留余量后按 {narration_word_limit} 词封顶）。
+STORYBOARD_OUTPUT_SPEC_WITH_NARRATION = """严格只输出一个 JSON 对象，不要输出任何解释文字或 markdown 代码块标记。
+需要生成 {shot_count} 个分镜，每个分镜时长 {shot_duration} 秒，总时长 {total_duration} 秒。格式如下：
+{{"keyword": "原样的关键词", "total_duration": {total_duration}, "shots": [{{"index": 1, "duration": {shot_duration}, "scene": "分镜画面描述", "prompt": "用于视频渲染的英文生成提示词", "narration": "该段旁白文案（英文）"}}]}}
+shots 数组必须恰好包含 {shot_count} 个元素，index 从 1 递增。
+重要：每段 narration 是要被朗读的旁白，必须简短，**每段不超过 {narration_word_limit} 个英文单词**，确保朗读时长不超过 {shot_duration} 秒。"""
+
 # (agent_type) → 内置默认提示词。用于种子回填与「恢复系统默认」。
 DEFAULT_AGENT_PROMPTS = {
     ContentAgent.AGENT_METADATA: DEFAULT_METADATA_PROMPT,
@@ -100,18 +108,27 @@ def generate_metadata(keyword):
     return result, log
 
 
-def generate_storyboard(keyword, shot_count=2, shot_duration=8):
+def generate_storyboard(keyword, shot_count=2, shot_duration=8, with_narration=False):
     """
     调脚本分镜生成 Agent，产出固定 JSON 分镜脚本。
     段数/每段时长为参数（默认 8+8）。返回 (data, log)。
+    with_narration=True（流程一）时，每段额外产出旁白文案 narration，并按每段时长约束字数。
     """
     prompt, agent = _get_prompt(ContentAgent.AGENT_STORYBOARD, DEFAULT_STORYBOARD_PROMPT)
     if prompt is None:
         raise RuntimeError("脚本分镜生成 Agent 已停用")
     total = shot_count * shot_duration
-    output_spec = STORYBOARD_OUTPUT_SPEC.format(
-        shot_count=shot_count, shot_duration=shot_duration, total_duration=total,
-    )
+    if with_narration:
+        # 约每秒 2.5 词，留余量后封顶，避免 TTS 音频超过画面段长（对齐问题）。
+        narration_word_limit = max(1, int(shot_duration * 2.5))
+        output_spec = STORYBOARD_OUTPUT_SPEC_WITH_NARRATION.format(
+            shot_count=shot_count, shot_duration=shot_duration, total_duration=total,
+            narration_word_limit=narration_word_limit,
+        )
+    else:
+        output_spec = STORYBOARD_OUTPUT_SPEC.format(
+            shot_count=shot_count, shot_duration=shot_duration, total_duration=total,
+        )
     full_prompt = prompt.replace("[input]", keyword).replace("[output]", output_spec)
     raw = _call_ai_stream([{"role": "user", "content": full_prompt}])
     data = _extract_json(raw)
@@ -120,12 +137,15 @@ def generate_storyboard(keyword, shot_count=2, shot_duration=8):
     normalized = []
     for i, shot in enumerate(shots[:shot_count], 1):
         shot = shot if isinstance(shot, dict) else {}
-        normalized.append({
+        entry = {
             "index": shot.get("index", i),
             "duration": shot.get("duration", shot_duration),
             "scene": (shot.get("scene") or "").strip(),
             "prompt": (shot.get("prompt") or "").strip(),
-        })
+        }
+        if with_narration:
+            entry["narration"] = (shot.get("narration") or "").strip()
+        normalized.append(entry)
     result = {"keyword": keyword, "total_duration": total, "shots": normalized}
     log = {"model": get_setting("AI_MODEL", "gemini-3.6-flash-medium"), "prompt": full_prompt, "raw_output": raw, "parsed": data}
     return result, log
@@ -186,6 +206,117 @@ def generate_thumbnail(thumbnail_prompt):
         ext = "jpg"
     image_bytes = base64.b64decode(match.group(2))
     return ContentFile(image_bytes), ext
+
+
+# ---------------------------------------------------------------------------
+# 旁白音频（TTS）——流程一专用。LLM 只出旁白文字，出声音必须接 TTS。
+# 默认 Edge TTS（微软免费、无 key、多语言），可切 elevenlabs（付费、需 key）。
+# 做成失败自动降级：edge 失败→尝试 elevenlabs→再失败则跳过该段（不中断整批任务）。
+# ---------------------------------------------------------------------------
+
+# 语言 → Edge TTS 默认音色。未命中的语言回退英文音色。
+_EDGE_VOICE_BY_LANG = {
+    "en": "en-US-GuyNeural",
+    "zh": "zh-CN-YunxiNeural",
+    "es": "es-ES-AlvaroNeural",
+    "pt": "pt-BR-AntonioNeural",
+    "fr": "fr-FR-HenriNeural",
+    "hi": "hi-IN-MadhurNeural",
+    "id": "id-ID-ArdiNeural",
+    "vi": "vi-VN-NamMinhNeural",
+}
+
+
+def _edge_voice_for(language):
+    """按任务语言取 Edge TTS 音色，全局设置 TTS_VOICE 优先。"""
+    configured = get_setting("TTS_VOICE")
+    if configured:
+        return configured
+    lang = (language or "en").split("-")[0].lower()
+    return _EDGE_VOICE_BY_LANG.get(lang, _EDGE_VOICE_BY_LANG["en"])
+
+
+def _tts_edge(text, language, out_path):
+    """用 edge-tts 合成一段旁白到 out_path（mp3）。同步封装（内部 asyncio.run）。"""
+    import asyncio
+
+    import edge_tts  # 延迟导入，未装依赖时只影响流程一
+
+    voice = _edge_voice_for(language)
+
+    async def _run():
+        communicate = edge_tts.Communicate(text, voice)
+        await communicate.save(out_path)
+
+    asyncio.run(_run())
+    if not os.path.exists(out_path) or os.path.getsize(out_path) == 0:
+        raise RuntimeError("edge-tts 未产出音频")
+
+
+def _tts_elevenlabs(text, out_path):
+    """用 ElevenLabs REST API 合成一段旁白到 out_path（mp3）。"""
+    api_key = get_setting("ELEVENLABS_API_KEY")
+    if not api_key:
+        raise RuntimeError("未配置 ELEVENLABS_API_KEY")
+    voice_id = get_setting("ELEVENLABS_VOICE_ID") or "21m00Tcm4TlvDq8ikWAM"  # 默认音色 Rachel
+    resp = requests.post(
+        f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}",
+        headers={"xi-api-key": api_key, "Content-Type": "application/json"},
+        json={"text": text, "model_id": "eleven_multilingual_v2"},
+        timeout=120,
+    )
+    resp.raise_for_status()
+    with open(out_path, "wb") as f:
+        f.write(resp.content)
+    if os.path.getsize(out_path) == 0:
+        raise RuntimeError("elevenlabs 未产出音频")
+
+
+def generate_narration_audio(shots, language, provider, out_dir, filename_prefix):
+    """
+    为分镜的每段 narration 合成旁白音频（流程一）。
+    provider：'edge'（默认免费）或 'elevenlabs'。失败自动降级，最后跳过该段。
+    返回 (audio_list, log)：
+      audio_list = [{"index":1, "file":"<绝对路径>", "provider":"edge"}, ...]（跳过的段不在列表里）
+      log = {"provider": ..., "segments": [{"index":1,"status":"success/fallback/skipped","provider":...,"error":...}]}
+    """
+    os.makedirs(out_dir, exist_ok=True)
+    audio_list = []
+    seg_logs = []
+    for shot in shots:
+        idx = shot.get("index")
+        text = (shot.get("narration") or "").strip()
+        seg = {"index": idx}
+        if not text:
+            seg.update({"status": "skipped", "error": "该段无旁白文案"})
+            seg_logs.append(seg)
+            continue
+        out_path = os.path.join(out_dir, f"{filename_prefix}_{idx}.mp3")
+        # 先按选定 provider 尝试，失败按 edge<->elevenlabs 互为降级。
+        order = ["edge", "elevenlabs"] if provider == "edge" else ["elevenlabs", "edge"]
+        done = False
+        errors = []
+        for prov in order:
+            try:
+                if prov == "edge":
+                    _tts_edge(text, language, out_path)
+                else:
+                    _tts_elevenlabs(text, out_path)
+                audio_list.append({"index": idx, "file": out_path, "provider": prov})
+                status = "success" if prov == order[0] else "fallback"
+                seg.update({"status": status, "provider": prov})
+                if errors:
+                    seg["error"] = "；".join(errors)
+                done = True
+                break
+            except Exception as exc:
+                errors.append(f"{prov}: {exc}")
+        if not done:
+            # 两个引擎都失败：跳过该段音频（渲染时该段为无声），不中断任务。
+            seg.update({"status": "skipped", "error": "；".join(errors)})
+        seg_logs.append(seg)
+    log = {"provider": provider, "segments": seg_logs}
+    return audio_list, log
 
 
 def merge_clips(clip_paths, output_path):

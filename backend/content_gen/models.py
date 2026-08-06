@@ -48,12 +48,28 @@ class ContentRun(models.Model):
         (STATUS_STOPPED, "已停止"), (STATUS_COMPLETED, "已完成"), (STATUS_FAILED, "失败"),
     ]
 
+    # 流程区分：flow2=半自动（人工上传视频合并），flow1=全自动（TTS + Remotion 渲染）。
+    # 默认 flow2 兼容存量任务。
+    FLOW_SEMI = "flow2"
+    FLOW_AUTO = "flow1"
+    FLOW_CHOICES = [(FLOW_SEMI, "流程二·半自动"), (FLOW_AUTO, "流程一·全自动")]
+
+    # TTS 引擎（仅流程一用）：edge=微软免费无 key，elevenlabs=付费需 key。
+    TTS_EDGE = "edge"
+    TTS_ELEVENLABS = "elevenlabs"
+    TTS_CHOICES = [(TTS_EDGE, "Edge TTS（免费）"), (TTS_ELEVENLABS, "ElevenLabs（付费）")]
+
     name = models.CharField(max_length=255, blank=True)   # 任务备注名，便于识别
+    flow = models.CharField(max_length=8, choices=FLOW_CHOICES, default=FLOW_SEMI)
     country = models.CharField(max_length=8, default="US")
     language = models.CharField(max_length=16, default="en")
     # 分镜段数与每段时长：可变参数，默认 8+8（两段各 8s）。现阶段用默认。
     shot_count = models.PositiveSmallIntegerField(default=2)
     shot_duration = models.PositiveSmallIntegerField(default=8)
+    # 流程一专用：创建任务时手填一个 promo code，整批关键词共用，渲染时注入模板。
+    promo_code = models.CharField(max_length=64, blank=True)
+    # 流程一专用：旁白 TTS 引擎，默认 edge。
+    tts_provider = models.CharField(max_length=16, choices=TTS_CHOICES, default=TTS_EDGE)
     status = models.CharField(max_length=16, choices=STATUS_CHOICES, default=STATUS_PENDING)
     task_token = models.UUIDField(default=uuid.uuid4, editable=False)
     error_message = models.TextField(blank=True)
@@ -74,14 +90,18 @@ class ContentItem(models.Model):
     """
     STATUS_PENDING = "pending"          # 待生成
     STATUS_GENERATING = "generating"    # AI 生成中（元数据/分镜/封面）
-    STATUS_GENERATED = "generated"      # AI 内容已生成，等待人工上传视频
-    STATUS_MERGING = "merging"          # 合并中
-    STATUS_MERGED = "merged"            # 已合并出成品
+    STATUS_GENERATED = "generated"      # AI 内容已生成，等待人工上传视频（流程二）
+    STATUS_MERGING = "merging"          # 合并中（流程二）
+    STATUS_MERGED = "merged"            # 已合并出成品（流程二）
+    STATUS_RENDERING = "rendering"      # 渲染中（流程一：TTS + Remotion）
+    STATUS_RENDERED = "rendered"        # 已渲染出成品（流程一）
     STATUS_FAILED = "failed"            # 生成失败
     STATUS_CHOICES = [
         (STATUS_PENDING, "待生成"), (STATUS_GENERATING, "AI 生成中"),
         (STATUS_GENERATED, "内容已生成，待上传视频"), (STATUS_MERGING, "合并中"),
-        (STATUS_MERGED, "已合并成品"), (STATUS_FAILED, "生成失败"),
+        (STATUS_MERGED, "已合并成品"),
+        (STATUS_RENDERING, "渲染中"), (STATUS_RENDERED, "已渲染成品"),
+        (STATUS_FAILED, "生成失败"),
     ]
 
     run = models.ForeignKey(ContentRun, on_delete=models.CASCADE, related_name="items")
@@ -98,9 +118,13 @@ class ContentItem(models.Model):
     # 分镜 Agent 产出（固定 JSON，段数可变默认 8+8）
     storyboard = models.JSONField(default=dict, blank=True)
 
-    # 人工上传的分镜视频（按段存列表：每段一个文件路径）；合并成品
+    # 人工上传的分镜视频（按段存列表：每段一个文件路径）；合并成品（流程二）
     clip_files = models.JSONField(default=list, blank=True)   # [{"index":1,"file":"content/.../x.mp4"}, ...]
     merged_file = models.FileField(upload_to="content/merged/", blank=True, null=True)
+
+    # 流程一专用：按段旁白音频（TTS 产出）与 Remotion 渲染成品。
+    narration_audio = models.JSONField(default=list, blank=True)  # [{"index":1,"file":"content/.../x.mp3","provider":"edge"}, ...]
+    rendered_file = models.FileField(upload_to="content/rendered/", blank=True, null=True)
 
     # 生成工作日志：两个 Agent 的完整输入提示词/原始输出/解析结果，封面出图提示词与结果，各步骤进度。
     # 供前端「查看日志」抽屉展示，方便调试提示词、看封面提示词到底长啥样。

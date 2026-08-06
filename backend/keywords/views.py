@@ -29,6 +29,11 @@ DEFAULT_SETTINGS = [
     ("AI_MODEL", "AI 模型名，2.0 默认 gemini-3.6-flash-medium"),
     ("GEMINI_IMAGE_API_KEY", "内容生成-封面出图 API Key（留空则复用 AI_API_KEY）"),
     ("GEMINI_IMAGE_MODEL", "内容生成-封面图片模型名，默认 gemini-3.1-flash-image"),
+    ("TTS_PROVIDER", "内容生成流程一-旁白 TTS 引擎，edge（默认免费）/ elevenlabs"),
+    ("TTS_VOICE", "内容生成流程一-旁白音色，留空按语言自动选（edge 如 en-US-GuyNeural）"),
+    ("ELEVENLABS_API_KEY", "内容生成流程一-ElevenLabs API Key（选 elevenlabs 时用）"),
+    ("ELEVENLABS_VOICE_ID", "内容生成流程一-ElevenLabs 音色 ID（留空用默认）"),
+    ("REMOTION_RENDER_URL", "内容生成流程一-Remotion 渲染服务地址（走 HTTP 调用时用）"),
 ]
 
 SCORE_LABELS = {

@@ -6,4 +6,5 @@ redis>=5.2,<6.0
 psycopg[binary]>=3.2,<4.0
 requests>=2.32,<3.0
 gunicorn>=23.0,<24.0
+edge-tts>=6.1,<8.0
 

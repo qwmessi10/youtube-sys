@@ -91,8 +91,30 @@ class VideoTemplateViewSet(viewsets.ModelViewSet):
             "text": result.get("text"),
             "analyzed_at": timezone.now().isoformat(),
             "source_name": upload.name,
+            "suggested_variables": result.get("suggested_variables") or [],
         }
-        template.save(update_fields=["analysis", "updated_at"])
+        update_fields = ["analysis", "updated_at"]
+        # AI 给出建议段数/时长则回填到模板（运营之后可在编辑里微调）。
+        if result.get("shot_count"):
+            template.shot_count = result["shot_count"]
+            update_fields.append("shot_count")
+        if result.get("shot_duration"):
+            template.shot_duration = result["shot_duration"]
+            update_fields.append("shot_duration")
+        # 模板还没声明变量时，用 AI 建议的变量预填，省去运营手敲。
+        if not template.variables_schema and result.get("suggested_variables"):
+            template.variables_schema = [
+                {
+                    "key": (v.get("key") or "").strip(),
+                    "label": (v.get("label") or v.get("key") or "").strip(),
+                    "required": True,
+                    "ai_editable": bool(v.get("ai_editable", False)),
+                }
+                for v in result["suggested_variables"]
+                if isinstance(v, dict) and (v.get("key") or "").strip()
+            ]
+            update_fields.append("variables_schema")
+        template.save(update_fields=update_fields)
         return Response(VideoTemplateSerializer(template, context={"request": request}).data)
 
     @action(detail=True, methods=["post"], parser_classes=[MultiPartParser, FormParser])

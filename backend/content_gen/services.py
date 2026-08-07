@@ -102,6 +102,51 @@ def get_default_agent_prompt(agent_type):
     return DEFAULT_AGENT_PROMPTS.get(agent_type, "")
 
 
+# 语言代码 → 输出语言中文名，用于在提示词里明确要求 AI 用该语言输出。
+_LANG_NAME = {
+    "en": "英语", "zh": "中文", "es": "西班牙语", "pt": "葡萄牙语", "fr": "法语",
+    "hi": "印地语", "id": "印尼语", "vi": "越南语", "ar": "阿拉伯语", "ru": "俄语",
+    "de": "德语", "ja": "日语", "ko": "韩语", "th": "泰语", "tr": "土耳其语",
+}
+
+
+def _lang_name(language):
+    """把语言代码转成中文名，供提示词使用；未知则回退英语。"""
+    lang = (language or "en").split("-")[0].lower()
+    return _LANG_NAME.get(lang, "英语")
+
+
+def _build_context_block(language, variables_schema):
+    """
+    构造注入 AI 提示词的「语言 + 变量」上下文说明。
+    - language：要求 AI 用该语言输出正文（标题/描述/旁白）。
+    - variables_schema：模板声明的变量清单。告诉 AI 可用 {key} 占位符引用，
+      其中 ai_editable=false 的（如优惠码）绝不能自己编造，只能用占位符。
+    返回一段中文说明文本；无内容时返回空串。
+    """
+    lines = []
+    if language:
+        lines.append(f"【输出语言】请用{_lang_name(language)}撰写标题、描述、旁白等所有面向观众的正文，"
+                     f"无论本提示词用什么语言书写。")
+    schema = variables_schema or []
+    if schema:
+        editable, locked = [], []
+        for v in schema:
+            if not isinstance(v, dict):
+                continue
+            key = (v.get("key") or "").strip()
+            if not key:
+                continue
+            label = (v.get("label") or key).strip()
+            (editable if v.get("ai_editable") else locked).append(f"{{{key}}}（{label}）")
+        lines.append("【可用变量占位符】文案中如需体现下列信息，请原样写占位符（系统会在出片时替换成真实值）：")
+        if locked:
+            lines.append(f"  - 以下变量由人工提供，你【绝对不能自己编造具体值】，只能写占位符：{'、'.join(locked)}")
+        if editable:
+            lines.append(f"  - 以下变量可由你自行发挥或引用：{'、'.join(editable)}")
+    return "\n".join(lines)
+
+
 def _get_prompt(agent_type, fallback):
     """从 ContentAgent 表读提示词；留空或未配置时回退到代码内默认。返回 (prompt, agent)。"""
     agent = ContentAgent.objects.filter(agent_type=agent_type).first()
@@ -111,16 +156,21 @@ def _get_prompt(agent_type, fallback):
     return prompt, agent
 
 
-def generate_metadata(keyword):
+def generate_metadata(keyword, language=None, variables_schema=None):
     """
     调元数据生成 Agent，产出标题/描述/封面提示词。
+    - language：要求 AI 用该语言输出正文（标题/描述）。
+    - variables_schema：模板变量清单，注入提示词让 AI 用 {key} 占位符、不编造锁定变量。
     返回 (data, log)：data 为 {title, description, thumbnail_prompt}；log 为 AI 调用日志。
     Agent 被停用时抛 RuntimeError。
     """
     prompt, agent = _get_prompt(ContentAgent.AGENT_METADATA, DEFAULT_METADATA_PROMPT)
     if prompt is None:
         raise RuntimeError("元数据生成 Agent 已停用")
-    full_prompt = prompt.replace("[input]", keyword).replace("[output]", METADATA_OUTPUT_SPEC)
+    # 把「语言 + 变量」上下文拼进输出格式说明前面，让 AI 遵守。
+    context = _build_context_block(language, variables_schema)
+    output_spec = (context + "\n\n" + METADATA_OUTPUT_SPEC) if context else METADATA_OUTPUT_SPEC
+    full_prompt = prompt.replace("[input]", keyword).replace("[output]", output_spec)
     raw = _call_ai_stream([{"role": "user", "content": full_prompt}])
     data = _extract_json(raw)
     result = {
@@ -175,9 +225,11 @@ def generate_storyboard(keyword, shot_count=2, shot_duration=8, with_narration=F
     return result, log
 
 
-def generate_narration_script(keyword, shot_count=2, shot_duration=8):
+def generate_narration_script(keyword, shot_count=2, shot_duration=8, language=None, variables_schema=None):
     """
     调音频脚本 Agent（流程一），只产出旁白文案分段（不含画面分镜）。
+    - language：要求 AI 用该语言撰写旁白。
+    - variables_schema：模板变量清单，注入提示词让 AI 用 {key} 占位符、不编造锁定变量。
     返回 (data, log)。data 结构与分镜一致（shots 里每段有 index/duration/narration），
     便于复用后续 TTS 与渲染逻辑；但每段只有 narration，画面交给 Remotion 模板。
     """
@@ -191,6 +243,10 @@ def generate_narration_script(keyword, shot_count=2, shot_duration=8):
         shot_count=shot_count, shot_duration=shot_duration, total_duration=total,
         narration_word_limit=narration_word_limit,
     )
+    # 把「语言 + 变量」上下文拼进输出格式说明前面（变量说明覆盖了 promo_code 占位符规则）。
+    context = _build_context_block(language, variables_schema)
+    if context:
+        output_spec = context + "\n\n" + output_spec
     full_prompt = prompt.replace("[input]", keyword).replace("[output]", output_spec)
     raw = _call_ai_stream([{"role": "user", "content": full_prompt}])
     data = _extract_json(raw)
@@ -528,8 +584,12 @@ def render_video(*, title, keyword, promo_code, cover_abs_path, shots,
 VIDEO_ANALYSIS_PROMPT = """你是一位视频模板分析师。请分析这段推广视频，用于复刻成一个可批量套数据的视频模板。
 请按时间戳详细描述：整体画面布局（是否分屏、各区域占比与内容）、屏幕上的文字及其位置、
 字体与配色、动画与转场方式、节奏快慢、分镜场景切分。
+另外请判断这段视频的旁白节奏：建议把旁白拆成几段、每段大约几秒最自然。
 最后，请指出哪些元素是「每条视频会变化的变量」（如优惠码、金额、国家），哪些是固定不变的。
-请用中文回答，结构清晰。"""
+
+请严格按以下 JSON 输出（不要输出解释文字或 markdown 代码块标记）：
+{"analysis": "上述完整的中文分析文本", "shot_count": 建议旁白段数(整数), "shot_duration": 每段建议秒数(整数), "suggested_variables": [{"key": "变量名(英文,如 promo_code)", "label": "中文显示名", "ai_editable": false}]}
+其中 suggested_variables 列出你识别到的「每条会变的变量」，优惠码/金额这类必须由人工提供的填 ai_editable=false。"""
 
 
 def analyze_reference_video(video_abs_path, prompt=None, timeout=600):
@@ -588,4 +648,20 @@ def analyze_reference_video(video_abs_path, prompt=None, timeout=600):
 
     if not content.strip():
         raise RuntimeError("视频分析返回为空")
-    return {"model": model, "text": content}
+
+    # 尝试解析结构化 JSON（分析文本 + 建议段数/时长 + 建议变量）。
+    # 解析失败则回退：整段当分析文本，段数/时长/变量留空由上层用默认。
+    parsed = _extract_json(content) or {}
+    text = (parsed.get("analysis") or "").strip() or content
+    result = {"model": model, "text": text}
+    try:
+        if parsed.get("shot_count"):
+            result["shot_count"] = int(parsed["shot_count"])
+        if parsed.get("shot_duration"):
+            result["shot_duration"] = int(parsed["shot_duration"])
+    except (TypeError, ValueError):
+        pass
+    sv = parsed.get("suggested_variables")
+    if isinstance(sv, list):
+        result["suggested_variables"] = sv
+    return result

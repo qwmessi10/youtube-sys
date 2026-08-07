@@ -8,11 +8,13 @@ from .models import ContentAgent, ContentItem, ContentRun, VideoTemplate
 class VideoTemplateSerializer(serializers.ModelSerializer):
     source_video_url = serializers.SerializerMethodField()
     run_count = serializers.IntegerField(source="runs.count", read_only=True)
+    status_label = serializers.CharField(source="get_status_display", read_only=True)
 
     class Meta:
         model = VideoTemplate
         fields = [
             "id", "name", "description", "width", "height", "fps",
+            "shot_count", "shot_duration", "status", "status_label", "adjust_notes",
             "composition_id", "variables_schema", "assets", "analysis",
             "source_video_url", "enabled", "run_count", "created_at", "updated_at",
         ]
@@ -78,9 +80,15 @@ class ContentRunCreateSerializer(ContentRunSerializer):
         fields = ContentRunSerializer.Meta.fields + ["keywords"]
 
     def validate(self, attrs):
-        # 流程一（全自动）必须选择视频模板，画面由模板决定。
-        if attrs.get("flow") == ContentRun.FLOW_AUTO and not attrs.get("template"):
-            raise serializers.ValidationError({"template": "流程一（全自动）必须选择视频模板。"})
+        # 流程一（全自动）必须选择一个「已就绪」的视频模板，画面由模板决定。
+        if attrs.get("flow") == ContentRun.FLOW_AUTO:
+            template = attrs.get("template")
+            if not template:
+                raise serializers.ValidationError({"template": "流程一（全自动）必须选择视频模板。"})
+            if template.status != VideoTemplate.STATUS_READY:
+                raise serializers.ValidationError(
+                    {"template": "该模板尚未接入组件（待接入状态），暂不能用于出片。"}
+                )
         return attrs
 
 

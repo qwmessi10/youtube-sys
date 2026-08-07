@@ -54,11 +54,25 @@ def _generate_one_item(item, run):
         item.gen_log = log
         item.save(update_fields=["gen_log", "updated_at"])
 
+    # 流程一：段数/时长读模板；语言与变量声明注入 AI。流程二沿用 run 上的值、无模板变量。
+    is_flow1 = run.flow == ContentRun.FLOW_AUTO
+    template = run.template if is_flow1 else None
+    if template:
+        shot_count = template.shot_count or run.shot_count
+        shot_duration = template.shot_duration or run.shot_duration
+        variables_schema = template.variables_schema or []
+    else:
+        shot_count = run.shot_count
+        shot_duration = run.shot_duration
+        variables_schema = []
+
     # 1) 元数据（标题/描述/封面提示词）
     record("metadata", "running")
     started = time.monotonic()
     try:
-        meta, meta_log = generate_metadata(item.keyword)
+        meta, meta_log = generate_metadata(
+            item.keyword, language=run.language, variables_schema=variables_schema
+        )
         item.title = meta["title"]
         item.description = meta["description"]
         item.thumbnail_prompt = meta["thumbnail_prompt"]
@@ -96,18 +110,18 @@ def _generate_one_item(item, run):
     # 3) 脚本生成：
     #    流程二 → 分镜脚本 Agent（出画面分镜，供人工按分镜拍视频）；
     #    流程一 → 音频脚本 Agent（只出旁白文案，画面由 Remotion 模板固定）。
-    is_flow1 = run.flow == ContentRun.FLOW_AUTO
     step_name = "narration_script" if is_flow1 else "storyboard"
     record(step_name, "running")
     started = time.monotonic()
     try:
         if is_flow1:
             storyboard, sb_log = generate_narration_script(
-                item.keyword, run.shot_count, run.shot_duration
+                item.keyword, shot_count, shot_duration,
+                language=run.language, variables_schema=variables_schema,
             )
         else:
             storyboard, sb_log = generate_storyboard(
-                item.keyword, run.shot_count, run.shot_duration, with_narration=False
+                item.keyword, shot_count, shot_duration, with_narration=False
             )
         item.storyboard = storyboard
         record(step_name, "success", detail={

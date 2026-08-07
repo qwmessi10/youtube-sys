@@ -96,7 +96,8 @@ const isFlow1 = computed(() => form.value.flow === "flow1");
 async function loadTemplates() {
   try {
     const { data } = await axios.get("/api/video-templates/", { params: { page: 1 } });
-    templates.value = (data.results || data || []).filter((t) => t.enabled);
+    // 只列出「已启用 + 已就绪（组件已接入）」的模板；待接入的不能出片。
+    templates.value = (data.results || data || []).filter((t) => t.enabled && t.status === "ready");
   } catch {
     /* 模板加载失败不阻断页面 */
   }
@@ -345,8 +346,8 @@ onUnmounted(stopPoll);
             <el-select v-model="form.template" placeholder="请选择视频模板" style="width: 320px">
               <el-option v-for="t in templates" :key="t.id" :label="`${t.name}（${t.width}×${t.height}）`" :value="t.id" />
             </el-select>
-            <small class="agent-hint" v-if="templates.length === 0">暂无可用模板，请先到「视频模板」菜单上传参考视频并创建模板。</small>
-            <small class="agent-hint" v-else-if="selectedTemplate">{{ selectedTemplate.description || '该模板无说明' }}</small>
+            <small class="agent-hint" v-if="templates.length === 0">暂无可用模板。请先到「视频模板」菜单创建模板，待开发接入组件、模板变为「已就绪」后即可选用。</small>
+            <small class="agent-hint" v-else-if="selectedTemplate">{{ selectedTemplate.description || '该模板无说明' }}（旁白 {{ selectedTemplate.shot_count }} 段 × {{ selectedTemplate.shot_duration }}s，由模板决定）</small>
           </el-form-item>
 
           <el-form-item label="批量方式" v-if="form.template">
@@ -385,11 +386,17 @@ onUnmounted(stopPoll);
         </template>
         <el-form :inline="true">
           <el-form-item label="任务备注名"><el-input v-model="form.name" placeholder="选填，便于识别" /></el-form-item>
-          <el-form-item label="目标国家"><el-select v-model="form.country" filterable style="width: 150px"><el-option v-for="item in options.countries" :key="item.value" :label="`${item.label} (${item.value})`" :value="item.value" /></el-select></el-form-item>
-          <el-form-item label="内容语言"><el-select v-model="form.language" filterable style="width: 150px"><el-option v-for="item in options.languages" :key="item.value" :label="`${item.label} (${item.value})`" :value="item.value" /></el-select></el-form-item>
-          <el-form-item :label="isFlow1 ? '旁白段数' : '分镜段数'"><el-input-number v-model="form.shot_count" :min="1" :max="10" /></el-form-item>
-          <el-form-item label="每段时长(秒)"><el-input-number v-model="form.shot_duration" :min="1" :max="60" /></el-form-item>
-          <!-- 流程一专属：配音引擎（优惠码已改为模板变量） -->
+          <!-- 目标国家仅流程二用；流程一画面由模板定、文案语言用下面的内容语言，无需国家 -->
+          <el-form-item v-if="!isFlow1" label="目标国家"><el-select v-model="form.country" filterable style="width: 150px"><el-option v-for="item in options.countries" :key="item.value" :label="`${item.label} (${item.value})`" :value="item.value" /></el-select></el-form-item>
+          <el-form-item label="内容语言">
+            <el-select v-model="form.language" filterable style="width: 150px"><el-option v-for="item in options.languages" :key="item.value" :label="`${item.label} (${item.value})`" :value="item.value" /></el-select>
+          </el-form-item>
+          <!-- 分镜段数/时长仅流程二用；流程一的旁白段数/时长由模板决定，创建时不填 -->
+          <template v-if="!isFlow1">
+            <el-form-item label="分镜段数"><el-input-number v-model="form.shot_count" :min="1" :max="10" /></el-form-item>
+            <el-form-item label="每段时长(秒)"><el-input-number v-model="form.shot_duration" :min="1" :max="60" /></el-form-item>
+          </template>
+          <!-- 流程一专属：配音引擎（优惠码已改为模板变量；段数/时长由模板决定） -->
           <el-form-item v-if="isFlow1" label="配音引擎"><el-select v-model="form.tts_provider" style="width: 170px"><el-option label="Edge TTS（免费）" value="edge" /><el-option label="ElevenLabs（付费）" value="elevenlabs" /></el-select></el-form-item>
           <el-form-item label=" "><el-button type="primary" :loading="creating" @click="createRun">开始生成</el-button></el-form-item>
         </el-form>

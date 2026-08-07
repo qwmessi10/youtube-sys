@@ -42,13 +42,28 @@ class VideoTemplate(models.Model):
              + render 项目里对应的一段 Remotion 组件代码（用 composition_id 关联）。
     上传参考视频后由 Gemini 分析出规格（analysis），据此人工把组件调到位再复用批量出片。
     """
+    # 模板接入状态：pending=运营提了需求、等开发写 Remotion 组件；ready=组件已接入、可出片。
+    # 只有 ready 的模板才出现在流程一的可选列表里。
+    STATUS_PENDING = "pending"
+    STATUS_READY = "ready"
+    STATUS_CHOICES = [(STATUS_PENDING, "待接入（开发制作组件中）"), (STATUS_READY, "已就绪（可出片）")]
+
     name = models.CharField(max_length=200)                       # 模板名
     description = models.CharField(max_length=500, blank=True)    # 模板说明
-    # 画面尺寸，默认横屏 1080p（参考视频即 1280x720，成片走 1920x1080）
+    # 画面尺寸，默认横屏 1080p（前端只让运营选 16:9 / 9:16，映射到具体像素）
     width = models.PositiveIntegerField(default=1920)
     height = models.PositiveIntegerField(default=1080)
     fps = models.PositiveSmallIntegerField(default=30)
-    # 关联 render 项目里 Root.tsx 注册的 Composition id；没接入组件前可为空
+    # 流程一段数/每段时长挪到模板上：analyze 时由 AI 给建议，运营可在模板编辑里微调。
+    # 创建任务时不再让运营填，直接读模板的值。
+    shot_count = models.PositiveSmallIntegerField(default=2)
+    shot_duration = models.PositiveSmallIntegerField(default=8)
+    # 接入状态（见上）。运营新建/提需求的模板默认 pending，开发接好组件后置 ready。
+    status = models.CharField(max_length=16, choices=STATUS_CHOICES, default=STATUS_PENDING)
+    # 运营的「调整需求」：画面要怎么改（优惠码更大、换配色、挪位置等），作为开发改组件的需求单。
+    # 画面模板=Remotion 组件代码，只能开发改，运营填文字无法自动改画面。
+    adjust_notes = models.TextField(blank=True)
+    # 关联 render 项目里 Root.tsx 注册的 Composition id；运营侧隐藏，由开发在后台填。
     composition_id = models.CharField(max_length=100, blank=True)
     # 变量声明：创建任务时据此动态渲染输入框。
     # 形如 [{"key":"promo_code","label":"优惠码","required":true,"ai_editable":false}]

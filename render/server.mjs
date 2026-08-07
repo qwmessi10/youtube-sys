@@ -13,13 +13,15 @@ import { fileURLToPath } from "url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = process.env.PORT || 3000;
-const COMPOSITION_ID = "PromoVideo";
+// 默认组件；请求可带 compositionId 指定其它模板组件。
+const DEFAULT_COMPOSITION_ID = "PromoVideo";
 // 共享 media 卷在容器内的挂载点；渲染时把该前缀的绝对路径改写成本服务的 HTTP 地址，
 // 让无头 Chromium 通过 HTTP 加载资源（file:// 会被 Chromium 安全策略拦截）。
 const MEDIA_ROOT = "/app/media";
 const MEDIA_URL_PREFIX = `http://localhost:${PORT}/media`;
 
-// 把 inputProps 里指向共享卷的绝对路径（coverSrc / shots[].audioSrc）改写成 HTTP URL。
+// 把 inputProps 里指向共享卷的绝对路径改写成 HTTP URL，供无头 Chromium 加载。
+// 覆盖：coverSrc、shots[].audioSrc、以及 assets 映射里的每个素材路径。
 function rewriteMediaPaths(props) {
   const toUrl = (p) =>
     typeof p === "string" && p.startsWith(MEDIA_ROOT + "/")
@@ -29,6 +31,11 @@ function rewriteMediaPaths(props) {
   if (next.coverSrc) next.coverSrc = toUrl(next.coverSrc);
   if (Array.isArray(next.shots)) {
     next.shots = next.shots.map((s) => ({ ...s, audioSrc: toUrl(s.audioSrc) }));
+  }
+  if (next.assets && typeof next.assets === "object") {
+    const assets = {};
+    for (const [k, v] of Object.entries(next.assets)) assets[k] = toUrl(v);
+    next.assets = assets;
   }
   return next;
 }
@@ -61,17 +68,18 @@ app.use("/media", express.static(MEDIA_ROOT));
 app.get("/health", (_req, res) => res.json({ ok: true }));
 
 app.post("/render", async (req, res) => {
-  const { inputProps, outPath } = req.body || {};
+  const { inputProps, outPath, compositionId } = req.body || {};
   if (!inputProps || !outPath) {
     return res.status(400).json({ error: "缺少 inputProps 或 outPath" });
   }
+  const compId = (compositionId || "").trim() || DEFAULT_COMPOSITION_ID;
   try {
     const serveUrl = await getBundle();
     // 把共享卷绝对路径改写成 HTTP URL，供 Chromium 加载
     const props = rewriteMediaPaths(inputProps);
     const composition = await selectComposition({
       serveUrl,
-      id: COMPOSITION_ID,
+      id: compId,
       inputProps: props,
     });
     console.log(`[render] rendering ${outPath} (${composition.durationInFrames} frames)`);

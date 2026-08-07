@@ -4,6 +4,27 @@
 
 ---
 
+## 2026-08-07
+
+### 内容生成系统：视频模板库 + 流程一批量出片 + 优惠码改为模板变量
+围绕「一个关键词 + 一个模板 + N 组变量 → N 个视频」重构流程一（全自动），核心目标是让每个视频的 AI 内容各不相同，规避 YouTube 重复内容风控。
+
+- **新增「视频模板」模块**（内容生成系统菜单下）：
+  - 模板库增删改查；上传参考视频交给 Gemini 分析出画面规格（`analyze` 接口，视频以 `image_url` data uri 走 chat/completions）。
+  - 模板声明「变量」（如 `promo_code`，可标记 `required` / `ai_editable`）与「默认素材」（如 `screen_record` 录屏）。
+  - 模板绑定 Remotion 组件 ID（`composition_id`），画面样式由该组件固定，批量渲染时套用。
+- **优惠码改为模板变量机制**（替换原先写死的 `promo_code` 字段）：
+  - 支持两种批量方式：① 数字框指定视频数量 + 共享变量；② 上传变量 CSV（首行变量名，每行一个视频）。
+  - 变量在渲染时注入模板；`ai_editable=否` 的变量（如优惠码）AI 不得生成，必须由用户提供。
+- **流程一必选模板**：创建任务时校验模板 + 必填变量/变量文件。
+- **AI 内容独立生成**：每个视频的标题/描述/封面/旁白由 AI 单独生成，互不重复。
+- **新增「音频脚本生成 Agent」**：流程一用它替代分镜脚本 Agent（只出旁白文案，画面交给模板）；流程二仍用元数据 + 分镜 Agent。
+- **新增 Remotion 模板 `SplitScreenPromo`**（1920×1080 左右分屏）：左侧品牌 + 优惠码，右侧手机操作录屏，按段落播放旁白配音。
+- **端到端验证通过**：流程一任务 → 元数据 → 封面 → 音频脚本 → Edge TTS 配音 → Remotion 渲染出成品，全链路成功。
+- 涉及文件：`content_gen/models.py`（`VideoTemplate`、`ContentItem.variables`、`ContentRun.template/video_count`）、`services.py`、`tasks.py`、`views.py`、`serializers.py`、`urls.py`、迁移 `0005`/`0006`、`render/src/SplitScreenPromo.tsx`、`render/src/Root.tsx`、`render/server.mjs`、`frontend` 新增 `VideoTemplates.vue` + 改造 `ContentTasks.vue`、`App.vue`。
+
+---
+
 ## 2026-08-03
 
 ### 新增打分模型 2.0（AI 博彩意图筛选 + 全量视频打分）

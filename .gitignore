@@ -10,6 +10,9 @@ render/node_modules/
 render/out/
 .pytest_cache/
 
+# 本地测试用参考视频（体积大，不入库）
+video/
+
 # 后续需求笔记，暂不纳入仓库
 打分规则更新.txt
 

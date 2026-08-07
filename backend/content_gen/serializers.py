@@ -2,7 +2,24 @@ from rest_framework import serializers
 
 from keywords.serializers import COUNTRIES, LANGUAGES
 
-from .models import ContentAgent, ContentItem, ContentRun
+from .models import ContentAgent, ContentItem, ContentRun, VideoTemplate
+
+
+class VideoTemplateSerializer(serializers.ModelSerializer):
+    source_video_url = serializers.SerializerMethodField()
+    run_count = serializers.IntegerField(source="runs.count", read_only=True)
+
+    class Meta:
+        model = VideoTemplate
+        fields = [
+            "id", "name", "description", "width", "height", "fps",
+            "composition_id", "variables_schema", "assets", "analysis",
+            "source_video_url", "enabled", "run_count", "created_at", "updated_at",
+        ]
+        read_only_fields = ["analysis", "assets"]
+
+    def get_source_video_url(self, obj):
+        return obj.source_video.url if obj.source_video else ""
 
 
 class ContentAgentSerializer(serializers.ModelSerializer):
@@ -18,12 +35,14 @@ class ContentAgentSerializer(serializers.ModelSerializer):
 class ContentRunSerializer(serializers.ModelSerializer):
     item_count = serializers.IntegerField(source="items.count", read_only=True)
     flow_label = serializers.CharField(source="get_flow_display", read_only=True)
+    template_name = serializers.CharField(source="template.name", read_only=True)
 
     class Meta:
         model = ContentRun
         fields = [
             "id", "name", "flow", "flow_label", "country", "language",
-            "shot_count", "shot_duration", "promo_code", "tts_provider",
+            "shot_count", "shot_duration", "template", "template_name", "video_count",
+            "promo_code", "tts_provider",
             "status", "error_message", "item_count", "created_at", "updated_at",
         ]
         read_only_fields = ["status", "error_message"]
@@ -45,7 +64,12 @@ class ContentRunSerializer(serializers.ModelSerializer):
 
 
 class ContentRunCreateSerializer(ContentRunSerializer):
-    """创建任务用：额外接收 keywords 列表（每个关键词生成一条 ContentItem）。"""
+    """
+    创建任务用：额外接收 keywords 列表。
+    流程二：每个关键词生成一条 ContentItem。
+    流程一：一个关键词 + 一个模板 + N 组变量 → N 条 ContentItem（变量组由视图从
+            video_count / 变量文件解析后填充；此序列化器只校验 run 级字段）。
+    """
     keywords = serializers.ListField(
         child=serializers.CharField(max_length=255), write_only=True, allow_empty=False,
     )
@@ -54,9 +78,9 @@ class ContentRunCreateSerializer(ContentRunSerializer):
         fields = ContentRunSerializer.Meta.fields + ["keywords"]
 
     def validate(self, attrs):
-        # 流程一（全自动）必须手填优惠码，渲染时注入视频模板。
-        if attrs.get("flow") == ContentRun.FLOW_AUTO and not (attrs.get("promo_code") or "").strip():
-            raise serializers.ValidationError({"promo_code": "流程一（全自动）需填写优惠码。"})
+        # 流程一（全自动）必须选择视频模板，画面由模板决定。
+        if attrs.get("flow") == ContentRun.FLOW_AUTO and not attrs.get("template"):
+            raise serializers.ValidationError({"template": "流程一（全自动）必须选择视频模板。"})
         return attrs
 
 
@@ -72,7 +96,7 @@ class ContentItemSerializer(serializers.ModelSerializer):
         model = ContentItem
         fields = [
             "id", "run", "run_name", "run_flow", "keyword", "status", "status_label",
-            "title", "description", "thumbnail_prompt", "thumbnail_url", "storyboard",
+            "variables", "title", "description", "thumbnail_prompt", "thumbnail_url", "storyboard",
             "clip_files", "merged_url", "narration_audio", "rendered_url",
             "gen_log", "error_message", "created_at", "updated_at",
         ]

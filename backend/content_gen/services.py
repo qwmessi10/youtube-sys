@@ -66,10 +66,34 @@ STORYBOARD_OUTPUT_SPEC_WITH_NARRATION = """严格只输出一个 JSON 对象，�
 shots 数组必须恰好包含 {shot_count} 个元素，index 从 1 递增。
 重要：每段 narration 是要被朗读的旁白，必须简短，**每段不超过 {narration_word_limit} 个英文单词**，确保朗读时长不超过 {shot_duration} 秒。"""
 
+# 流程一·音频脚本 Agent 默认提示词。画面由 Remotion 模板固定，此 Agent 只产出旁白文案。
+DEFAULT_NARRATION_PROMPT = """# 角色
+你是一位短视频口播文案师，擅长为推广类视频撰写自然、口语化、有号召力的旁白。
+
+# 目标
+根据给定的搜索关键词，撰写一段用于视频配音（TTS 朗读）的旁白文案，目的是推广 promo code、引导观众注册。
+画面由固定模板呈现，你无需描述画面，只需产出要被朗读出来的旁白文字。
+按下方输出格式，把旁白拆成若干段，每段对应视频的一个时间片段。
+
+# 输入
+关键词：[input]
+
+# 输出
+[output]"""
+
+# 音频脚本输出格式：只出旁白分段（index/duration/narration），不含画面 scene/prompt。
+NARRATION_OUTPUT_SPEC = """严格只输出一个 JSON 对象，不要输出任何解释文字或 markdown 代码块标记。
+需要生成 {shot_count} 段旁白，每段时长 {shot_duration} 秒，总时长 {total_duration} 秒。格式如下：
+{{"keyword": "原样的关键词", "total_duration": {total_duration}, "shots": [{{"index": 1, "duration": {shot_duration}, "narration": "该段旁白文案"}}]}}
+shots 数组必须恰好包含 {shot_count} 个元素，index 从 1 递增。
+重要：每段 narration 是要被朗读的旁白，必须简短，**每段不超过 {narration_word_limit} 个单词**，确保朗读时长不超过 {shot_duration} 秒。
+如需在旁白中提及优惠码，请原样使用占位符 {{promo_code}}（不要自己编造优惠码），系统会在渲染时替换成真实优惠码。"""
+
 # (agent_type) → 内置默认提示词。用于种子回填与「恢复系统默认」。
 DEFAULT_AGENT_PROMPTS = {
     ContentAgent.AGENT_METADATA: DEFAULT_METADATA_PROMPT,
     ContentAgent.AGENT_STORYBOARD: DEFAULT_STORYBOARD_PROMPT,
+    ContentAgent.AGENT_NARRATION: DEFAULT_NARRATION_PROMPT,
 }
 
 
@@ -146,6 +170,39 @@ def generate_storyboard(keyword, shot_count=2, shot_duration=8, with_narration=F
         if with_narration:
             entry["narration"] = (shot.get("narration") or "").strip()
         normalized.append(entry)
+    result = {"keyword": keyword, "total_duration": total, "shots": normalized}
+    log = {"model": get_setting("AI_MODEL", "gemini-3.6-flash-medium"), "prompt": full_prompt, "raw_output": raw, "parsed": data}
+    return result, log
+
+
+def generate_narration_script(keyword, shot_count=2, shot_duration=8):
+    """
+    调音频脚本 Agent（流程一），只产出旁白文案分段（不含画面分镜）。
+    返回 (data, log)。data 结构与分镜一致（shots 里每段有 index/duration/narration），
+    便于复用后续 TTS 与渲染逻辑；但每段只有 narration，画面交给 Remotion 模板。
+    """
+    prompt, agent = _get_prompt(ContentAgent.AGENT_NARRATION, DEFAULT_NARRATION_PROMPT)
+    if prompt is None:
+        raise RuntimeError("音频脚本生成 Agent 已停用")
+    total = shot_count * shot_duration
+    # 约每秒 2.5 词，留余量后封顶，避免 TTS 音频超过画面段长。
+    narration_word_limit = max(1, int(shot_duration * 2.5))
+    output_spec = NARRATION_OUTPUT_SPEC.format(
+        shot_count=shot_count, shot_duration=shot_duration, total_duration=total,
+        narration_word_limit=narration_word_limit,
+    )
+    full_prompt = prompt.replace("[input]", keyword).replace("[output]", output_spec)
+    raw = _call_ai_stream([{"role": "user", "content": full_prompt}])
+    data = _extract_json(raw)
+    shots = data.get("shots") if isinstance(data.get("shots"), list) else []
+    normalized = []
+    for i, shot in enumerate(shots[:shot_count], 1):
+        shot = shot if isinstance(shot, dict) else {}
+        normalized.append({
+            "index": shot.get("index", i),
+            "duration": shot.get("duration", shot_duration),
+            "narration": (shot.get("narration") or "").strip(),
+        })
     result = {"keyword": keyword, "total_duration": total, "shots": normalized}
     log = {"model": get_setting("AI_MODEL", "gemini-3.6-flash-medium"), "prompt": full_prompt, "raw_output": raw, "parsed": data}
     return result, log
@@ -391,7 +448,8 @@ def _merge_clips_video_only(clip_paths, output_path, target_w, target_h, fps):
 # 流程一：调用 Remotion 渲染服务，把封面 + 分镜字幕 + 旁白音频合成为竖屏成品视频。
 # ---------------------------------------------------------------------------
 def render_video(*, title, keyword, promo_code, cover_abs_path, shots,
-                 narration_audio, output_abs_path, render_url=None, timeout=1200):
+                 narration_audio, output_abs_path, composition_id="",
+                 variables=None, assets=None, render_url=None, timeout=1200):
     """
     通过 HTTP 调用 render 容器的 Remotion 服务渲染成品视频。
 
@@ -403,6 +461,9 @@ def render_video(*, title, keyword, promo_code, cover_abs_path, shots,
     - shots：分镜列表 [{"index","duration","scene","narration"}, ...]
     - narration_audio：旁白音频列表 [{"index","file":"<绝对路径>","provider"}, ...]
     - output_abs_path：成品 mp4 输出绝对路径（render 容器写入共享卷）
+    - composition_id：指定 render 项目里的 Remotion 组件（空则用默认 PromoVideo）
+    - variables：本条视频的模板变量组 {"promo_code":...}，整体透传给模板
+    - assets：模板素材绝对路径列表 [{"key","file":"<绝对路径>"}]
 
     返回 render 服务响应 dict（含 durationInFrames）。失败抛异常。
     """
@@ -424,6 +485,9 @@ def render_video(*, title, keyword, promo_code, cover_abs_path, shots,
             "audioSrc": audio_by_index.get(idx, ""),
         })
 
+    # 素材列表转成 {key: 绝对路径} 映射，供模板按 key 取用。
+    asset_map = {a.get("key"): a.get("file") for a in (assets or []) if a.get("key")}
+
     input_props = {
         "title": title or "",
         "keyword": keyword or "",
@@ -431,11 +495,16 @@ def render_video(*, title, keyword, promo_code, cover_abs_path, shots,
         "coverSrc": cover_abs_path or "",
         "totalDuration": total_duration or 16,
         "shots": prop_shots,
+        "variables": variables or {},
+        "assets": asset_map,
     }
 
+    body = {"inputProps": input_props, "outPath": output_abs_path}
+    if composition_id:
+        body["compositionId"] = composition_id
     resp = requests.post(
         render_url,
-        json={"inputProps": input_props, "outPath": output_abs_path},
+        json=body,
         timeout=timeout,
     )
     if resp.status_code != 200:
@@ -449,3 +518,74 @@ def render_video(*, title, keyword, promo_code, cover_abs_path, shots,
     if not data.get("ok"):
         raise RuntimeError(f"Remotion 渲染失败：{data.get('error')}")
     return data
+
+
+# ---------------------------------------------------------------------------
+# 视频模板库：用 Gemini 分析参考视频，产出模板规格（布局/文字/配色/转场/分镜时间戳）。
+# 关键：必须用 Gemini 的 key + Gemini 模型；视频以 image_url 的 data uri 塞进 chat 接口。
+# （每个 key 只能用一家厂商模型，用 GPT key 喂视频会报 unsupported format。）
+# ---------------------------------------------------------------------------
+VIDEO_ANALYSIS_PROMPT = """你是一位视频模板分析师。请分析这段推广视频，用于复刻成一个可批量套数据的视频模板。
+请按时间戳详细描述：整体画面布局（是否分屏、各区域占比与内容）、屏幕上的文字及其位置、
+字体与配色、动画与转场方式、节奏快慢、分镜场景切分。
+最后，请指出哪些元素是「每条视频会变化的变量」（如优惠码、金额、国家），哪些是固定不变的。
+请用中文回答，结构清晰。"""
+
+
+def analyze_reference_video(video_abs_path, prompt=None, timeout=600):
+    """
+    调 Gemini 分析参考视频，返回分析文本。
+    - video_abs_path：视频文件绝对路径
+    - 用 GEMINI_VIDEO_API_KEY（没配则用 GEMINI_IMAGE_API_KEY）+ Gemini 模型
+    """
+    base_url = get_setting("AI_BASE_URL", "https://moretokens.ai/v1").rstrip("/")
+    api_key = (
+        get_setting("GEMINI_VIDEO_API_KEY")
+        or get_setting("GEMINI_IMAGE_API_KEY")
+        or get_setting("AI_API_KEY")
+    )
+    model = get_setting("GEMINI_VIDEO_MODEL") or get_setting("GEMINI_IMAGE_MODEL", "gemini-3.6-flash-medium")
+    if not api_key:
+        raise RuntimeError("未配置 GEMINI_VIDEO_API_KEY / GEMINI_IMAGE_API_KEY，无法分析视频")
+
+    with open(video_abs_path, "rb") as f:
+        raw = f.read()
+    data_uri = "data:video/mp4;base64," + base64.b64encode(raw).decode()
+    messages = [{"role": "user", "content": [
+        {"type": "text", "text": prompt or VIDEO_ANALYSIS_PROMPT},
+        {"type": "image_url", "image_url": {"url": data_uri}},
+    ]}]
+
+    response = requests.post(
+        f"{base_url}/chat/completions",
+        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+        json={"model": model, "stream": True, "messages": messages},
+        timeout=timeout, stream=True,
+    )
+    if response.status_code != 200:
+        raise RuntimeError(f"视频分析失败（HTTP {response.status_code}）：{response.text[:400]}")
+
+    content = ""
+    for raw_line in response.iter_lines(decode_unicode=False):
+        if not raw_line:
+            continue
+        line = raw_line.decode("utf-8", errors="replace")
+        if not line.startswith("data:"):
+            continue
+        payload = line[len("data:"):].strip()
+        if payload == "[DONE]":
+            break
+        try:
+            obj = json.loads(payload)
+        except Exception:
+            continue
+        choices = obj.get("choices") or []
+        if not choices:
+            continue
+        piece = (choices[0].get("delta") or {}).get("content")
+        if piece:
+            content += piece
+
+    if not content.strip():
+        raise RuntimeError("视频分析返回为空")
+    return {"model": model, "text": content}

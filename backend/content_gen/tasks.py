@@ -12,6 +12,7 @@ from .models import ContentItem, ContentRun
 from .services import (
     generate_metadata,
     generate_narration_audio,
+    generate_narration_script,
     generate_storyboard,
     generate_thumbnail,
     merge_clips,
@@ -92,16 +93,24 @@ def _generate_one_item(item, run):
     else:
         record("thumbnail", "skipped", error="没有封面提示词，跳过出图")
 
-    # 3) 分镜脚本（段数可变，默认 8+8）。流程一额外产出每段旁白文案。
+    # 3) 脚本生成：
+    #    流程二 → 分镜脚本 Agent（出画面分镜，供人工按分镜拍视频）；
+    #    流程一 → 音频脚本 Agent（只出旁白文案，画面由 Remotion 模板固定）。
     is_flow1 = run.flow == ContentRun.FLOW_AUTO
-    record("storyboard", "running")
+    step_name = "narration_script" if is_flow1 else "storyboard"
+    record(step_name, "running")
     started = time.monotonic()
     try:
-        storyboard, sb_log = generate_storyboard(
-            item.keyword, run.shot_count, run.shot_duration, with_narration=is_flow1
-        )
+        if is_flow1:
+            storyboard, sb_log = generate_narration_script(
+                item.keyword, run.shot_count, run.shot_duration
+            )
+        else:
+            storyboard, sb_log = generate_storyboard(
+                item.keyword, run.shot_count, run.shot_duration, with_narration=False
+            )
         item.storyboard = storyboard
-        record("storyboard", "success", detail={
+        record(step_name, "success", detail={
             "model": sb_log.get("model"),
             "prompt": sb_log.get("prompt"),
             "raw_output": sb_log.get("raw_output"),
@@ -109,8 +118,8 @@ def _generate_one_item(item, run):
             "shots": storyboard.get("shots"),
         }, elapsed=time.monotonic() - started)
     except Exception as exc:
-        errors.append(f"分镜脚本生成失败：{exc}")
-        record("storyboard", "failed", error=str(exc), elapsed=time.monotonic() - started)
+        errors.append(f"{'音频脚本' if is_flow1 else '分镜脚本'}生成失败：{exc}")
+        record(step_name, "failed", error=str(exc), elapsed=time.monotonic() - started)
 
     # 流程一到此完成「内容生成」阶段（元数据/封面/分镜+旁白文案）。
     # 若三步全失败则直接失败；否则继续 TTS + Remotion 渲染。
@@ -140,11 +149,32 @@ def _finalize_flow1_item(item, run, log, errors, record):
     shots = (item.storyboard or {}).get("shots") or []
     if not shots:
         log["finished_at"] = timezone.now().isoformat()
-        item.error_message = "；".join(errors) or "分镜脚本为空，无法渲染视频"
+        item.error_message = "；".join(errors) or "旁白脚本为空，无法渲染视频"
         item.status = ContentItem.STATUS_FAILED
         item.gen_log = log
         item.save()
         return
+
+    # 变量注入：把 AI 文案里的 {promo_code} 等占位符替换成本条视频的真实变量值。
+    # 变量来源：本条 item 的 variables（每视频一组），兜底用 run.promo_code。
+    variables = dict(item.variables or {})
+    if "promo_code" not in variables and (run.promo_code or "").strip():
+        variables["promo_code"] = run.promo_code.strip()
+
+    def _fill(text):
+        """用变量替换文本中的 {key} 占位符；缺失的占位符原样保留，不报错。"""
+        if not text:
+            return text
+        for k, v in variables.items():
+            text = text.replace("{" + k + "}", str(v))
+        return text
+
+    # 替换旁白文案与标题里的占位符（旁白会被 TTS 朗读、标题会显示在画面）。
+    for shot in shots:
+        if shot.get("narration"):
+            shot["narration"] = _fill(shot["narration"])
+    item.title = _fill(item.title)
+    promo_code = variables.get("promo_code", "")
 
     # 4) TTS 旁白音频
     record("narration", "running", detail={"provider": run.tts_provider})
@@ -193,10 +223,22 @@ def _finalize_flow1_item(item, run, log, errors, record):
              "provider": a["provider"]}
             for a in item.narration_audio
         ]
+        # 模板信息：composition_id 决定用哪个 Remotion 组件；素材路径转绝对路径。
+        template = run.template
+        composition_id = (template.composition_id or "").strip() if template else ""
+        assets_abs = []
+        if template:
+            for a in (template.assets or []):
+                if a.get("file"):
+                    assets_abs.append({
+                        "key": a.get("key"),
+                        "file": os.path.join(settings.MEDIA_ROOT, a["file"]),
+                    })
         render_result = render_video(
-            title=item.title, keyword=item.keyword, promo_code=run.promo_code,
+            title=item.title, keyword=item.keyword, promo_code=promo_code,
             cover_abs_path=cover_abs, shots=shots, narration_audio=audio_abs,
-            output_abs_path=out_abs,
+            output_abs_path=out_abs, composition_id=composition_id,
+            variables=variables, assets=assets_abs,
         )
         item.rendered_file.name = rel_path.replace("\\", "/")
         item.status = ContentItem.STATUS_RENDERED

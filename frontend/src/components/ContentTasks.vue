@@ -15,7 +15,12 @@ const form = ref({
   name: "", flow: "flow2", country: "US", language: "en",
   shot_count: 2, shot_duration: 8, keywordsText: "",
   promo_code: "", tts_provider: "edge",   // 流程一专用
+  // 流程一模板与批量：template=模板id，video_count=方案a条数，
+  // batchMode='count'|'csv'，variables=模板变量取值，variablesFile=方案b上传文件。
+  template: null, video_count: 1, batchMode: "count",
+  variables: {}, variablesFile: null,
 });
+const templates = ref([]);          // 可选视频模板列表（流程一）
 const creating = ref(false);
 const runs = ref([]);
 const runTotal = ref(0);
@@ -87,43 +92,96 @@ async function loadItems(page = itemPage.value) {
 
 const isFlow1 = computed(() => form.value.flow === "flow1");
 
+// 加载可用视频模板（流程一选择用）
+async function loadTemplates() {
+  try {
+    const { data } = await axios.get("/api/video-templates/", { params: { page: 1 } });
+    templates.value = (data.results || data || []).filter((t) => t.enabled);
+  } catch {
+    /* 模板加载失败不阻断页面 */
+  }
+}
+
+// 当前选中的模板对象
+const selectedTemplate = computed(() =>
+  templates.value.find((t) => t.id === form.value.template) || null,
+);
+// 模板声明的变量清单（据此动态渲染输入框）
+const templateVariables = computed(() => selectedTemplate.value?.variables_schema || []);
+
+// 切换模板时，按模板变量声明初始化 variables 取值对象
+watch(() => form.value.template, () => {
+  const vars = {};
+  for (const v of templateVariables.value) vars[v.key] = "";
+  form.value.variables = vars;
+});
+
 async function createRun() {
   const keywords = parsedKeywords.value;
   if (keywords.length === 0) return ElMessage.warning("请至少输入一个关键词");
-  // 流程一（全自动）必须填优惠码，渲染时注入视频模板。
-  if (isFlow1.value && !form.value.promo_code.trim()) {
-    return ElMessage.warning("流程一（全自动）需填写优惠码");
+  if (isFlow1.value) {
+    if (!form.value.template) return ElMessage.warning("流程一必须选择视频模板");
+    // 校验模板声明的必填变量（仅方案a：数字框共享变量时校验）
+    if (form.value.batchMode === "count") {
+      for (const v of templateVariables.value) {
+        if (v.required && !String(form.value.variables[v.key] || "").trim()) {
+          return ElMessage.warning(`请填写模板变量：${v.label || v.key}`);
+        }
+      }
+    } else if (!form.value.variablesFile) {
+      return ElMessage.warning("请上传变量文件（CSV），或改用「按数量生成」");
+    }
   }
   creating.value = true;
   try {
-    const payload = {
-      name: form.value.name,
-      flow: form.value.flow,
-      country: form.value.country,
-      language: form.value.language,
-      shot_count: form.value.shot_count,
-      shot_duration: form.value.shot_duration,
-      keywords,
-    };
-    // 流程一附带优惠码与 TTS 引擎
+    let resp;
     if (isFlow1.value) {
-      payload.promo_code = form.value.promo_code.trim();
-      payload.tts_provider = form.value.tts_provider;
+      // 流程一用 FormData 提交（可能带变量文件）
+      const fd = new FormData();
+      fd.append("name", form.value.name);
+      fd.append("flow", "flow1");
+      fd.append("country", form.value.country);
+      fd.append("language", form.value.language);
+      fd.append("shot_count", form.value.shot_count);
+      fd.append("shot_duration", form.value.shot_duration);
+      fd.append("keywords", JSON.stringify(keywords));
+      fd.append("template", form.value.template);
+      fd.append("tts_provider", form.value.tts_provider);
+      if (form.value.batchMode === "count") {
+        fd.append("video_count", form.value.video_count);
+        // 共享变量里若含 promo_code，作为 run.promo_code 传（后端会填进每条 item）
+        if (form.value.variables.promo_code) fd.append("promo_code", form.value.variables.promo_code);
+      } else {
+        fd.append("variables_file", form.value.variablesFile);
+      }
+      resp = await axios.post("/api/content-runs/", fd);
+    } else {
+      resp = await axios.post("/api/content-runs/", {
+        name: form.value.name, flow: "flow2",
+        country: form.value.country, language: form.value.language,
+        shot_count: form.value.shot_count, shot_duration: form.value.shot_duration,
+        keywords,
+      });
     }
-    await axios.post("/api/content-runs/", payload);
-    const tip = isFlow1.value ? "，将自动完成配音与视频渲染" : "";
-    ElMessage.success(`任务已创建，正在为 ${keywords.length} 个关键词生成内容${tip}`);
+    const count = resp.data?.item_count;
+    const tip = isFlow1.value ? `，将自动生成 ${count} 个视频（配音 + 渲染）` : "";
+    ElMessage.success(`任务已创建${tip}`);
     form.value.keywordsText = "";
     form.value.name = "";
+    form.value.variablesFile = null;
     await loadRuns(1);
   } catch (error) {
     const data = error.response?.data;
-    // 后端字段级校验（如 promo_code）也能提示出来
-    const msg = data?.detail || (data?.promo_code && data.promo_code[0]) || "创建任务失败，请检查输入";
+    const msg = data?.detail || (data?.template && data.template[0]) || (data?.promo_code && data.promo_code[0]) || "创建任务失败，请检查输入";
     ElMessage.error(msg);
   } finally {
     creating.value = false;
   }
+}
+
+// 变量文件选择
+function onVariablesFileChange(uploadFile) {
+  form.value.variablesFile = uploadFile?.raw || null;
 }
 
 async function controlRun(run, action) {
@@ -207,6 +265,7 @@ const stepMeta = {
   metadata: "元数据生成",
   thumbnail: "封面出图",
   storyboard: "分镜脚本生成",
+  narration_script: "音频脚本生成",
   narration: "旁白配音（TTS）",
   render: "视频渲染（Remotion）",
 };
@@ -251,7 +310,7 @@ watch(() => props.injectedKeywords, (kws) => {
 });
 
 onMounted(async () => {
-  await Promise.all([loadRuns(), loadItems()]);
+  await Promise.all([loadRuns(), loadItems(), loadTemplates()]);
   if (props.injectedKeywords?.length) form.value.keywordsText = props.injectedKeywords.join("\n");
 });
 onUnmounted(stopPoll);
@@ -269,21 +328,68 @@ onUnmounted(stopPoll);
         </el-form-item>
         <el-alert
           v-if="isFlow1"
-          title="流程一会在生成标题/描述/封面/分镜脚本后，自动为每段分镜配旁白语音，再用 Remotion 渲染出竖屏成品视频，无需人工上传。当前模板为纯文字动效版，后续可精细化。"
+          title="流程一：选一个视频模板，填一个关键词，指定要生成的视频数量或上传变量文件。系统会为每个视频独立生成标题/描述/封面/旁白（避免重复），套进模板并自动配音、渲染出成品。"
           type="warning" :closable="false" class="process-note" show-icon
         />
-        <el-form-item label="关键词（每行一个，或用逗号分隔；可从关键词结果页一键送入）">
+        <el-form-item :label="isFlow1 ? '关键词（流程一只取第一个）' : '关键词（每行一个，或用逗号分隔；可从关键词结果页一键送入）'">
           <el-input v-model="form.keywordsText" type="textarea" :autosize="{ minRows: 3, maxRows: 10 }" placeholder="例如：&#10;1xbet promo code&#10;betwinner bonus" />
-          <small class="agent-hint">当前解析出 {{ parsedKeywords.length }} 个关键词，每个关键词生成一条内容记录。</small>
+          <small class="agent-hint">
+            <template v-if="isFlow1">流程一：只使用第一个关键词「{{ parsedKeywords[0] || '（未填）' }}」，按下方数量或变量文件生成多个视频。</template>
+            <template v-else>当前解析出 {{ parsedKeywords.length }} 个关键词，每个关键词生成一条内容记录。</template>
+          </small>
         </el-form-item>
+
+        <!-- 流程一：选模板 + 动态变量 + 批量方式 -->
+        <template v-if="isFlow1">
+          <el-form-item label="视频模板（必选）">
+            <el-select v-model="form.template" placeholder="请选择视频模板" style="width: 320px">
+              <el-option v-for="t in templates" :key="t.id" :label="`${t.name}（${t.width}×${t.height}）`" :value="t.id" />
+            </el-select>
+            <small class="agent-hint" v-if="templates.length === 0">暂无可用模板，请先到「视频模板」菜单上传参考视频并创建模板。</small>
+            <small class="agent-hint" v-else-if="selectedTemplate">{{ selectedTemplate.description || '该模板无说明' }}</small>
+          </el-form-item>
+
+          <el-form-item label="批量方式" v-if="form.template">
+            <el-radio-group v-model="form.batchMode">
+              <el-radio-button label="count">按数量生成（共享变量）</el-radio-button>
+              <el-radio-button label="csv">上传变量文件（每行一个视频）</el-radio-button>
+            </el-radio-group>
+          </el-form-item>
+
+          <!-- 方案a：数字框 + 共享变量 -->
+          <template v-if="form.template && form.batchMode === 'count'">
+            <el-form :inline="true">
+              <el-form-item label="生成视频数量">
+                <el-input-number v-model="form.video_count" :min="1" :max="50" />
+              </el-form-item>
+              <el-form-item v-for="v in templateVariables" :key="v.key" :label="v.label || v.key">
+                <el-input v-model="form.variables[v.key]" :placeholder="v.required ? '必填' : '选填'" style="width: 180px" />
+              </el-form-item>
+            </el-form>
+            <small class="agent-hint">共 {{ form.video_count }} 个视频共用上面这组变量；每个视频的标题/描述/封面/旁白由 AI 独立生成，各不相同。</small>
+          </template>
+
+          <!-- 方案b：上传 CSV -->
+          <template v-else-if="form.template && form.batchMode === 'csv'">
+            <el-form-item label="变量文件（CSV，首行为变量名，每行一个视频）">
+              <el-upload :show-file-list="true" :auto-upload="false" :limit="1" accept=".csv"
+                :on-change="(f) => onVariablesFileChange(f)" :on-remove="() => (form.variablesFile = null)">
+                <el-button plain>选择 CSV 文件</el-button>
+              </el-upload>
+              <small class="agent-hint">
+                表头填模板变量名（如 promo_code）。有几行数据就生成几个视频。
+                该模板变量：{{ templateVariables.map((v) => v.key).join('、') || '（无）' }}
+              </small>
+            </el-form-item>
+          </template>
+        </template>
         <el-form :inline="true">
           <el-form-item label="任务备注名"><el-input v-model="form.name" placeholder="选填，便于识别" /></el-form-item>
           <el-form-item label="目标国家"><el-select v-model="form.country" filterable style="width: 150px"><el-option v-for="item in options.countries" :key="item.value" :label="`${item.label} (${item.value})`" :value="item.value" /></el-select></el-form-item>
           <el-form-item label="内容语言"><el-select v-model="form.language" filterable style="width: 150px"><el-option v-for="item in options.languages" :key="item.value" :label="`${item.label} (${item.value})`" :value="item.value" /></el-select></el-form-item>
-          <el-form-item label="分镜段数"><el-input-number v-model="form.shot_count" :min="1" :max="10" /></el-form-item>
+          <el-form-item :label="isFlow1 ? '旁白段数' : '分镜段数'"><el-input-number v-model="form.shot_count" :min="1" :max="10" /></el-form-item>
           <el-form-item label="每段时长(秒)"><el-input-number v-model="form.shot_duration" :min="1" :max="60" /></el-form-item>
-          <!-- 流程一专属：优惠码 + 配音引擎 -->
-          <el-form-item v-if="isFlow1" label="优惠码（注入视频）"><el-input v-model="form.promo_code" placeholder="必填，如 NEW100" style="width: 160px" /></el-form-item>
+          <!-- 流程一专属：配音引擎（优惠码已改为模板变量） -->
           <el-form-item v-if="isFlow1" label="配音引擎"><el-select v-model="form.tts_provider" style="width: 170px"><el-option label="Edge TTS（免费）" value="edge" /><el-option label="ElevenLabs（付费）" value="elevenlabs" /></el-select></el-form-item>
           <el-form-item label=" "><el-button type="primary" :loading="creating" @click="createRun">开始生成</el-button></el-form-item>
         </el-form>
@@ -328,14 +434,21 @@ onUnmounted(stopPoll);
               <el-descriptions-item label="封面提示词">{{ row.thumbnail_prompt || "未生成" }}</el-descriptions-item>
             </el-descriptions>
 
+            <!-- 流程一：展示该视频注入的变量组（优惠码等） -->
+            <div v-if="row.run_flow === 'flow1' && row.variables && Object.keys(row.variables).length" class="clip-status">
+              <strong>本视频变量：</strong>
+              <el-tag v-for="(val, key) in row.variables" :key="key" size="small" type="warning" effect="plain">{{ key }} = {{ val }}</el-tag>
+            </div>
+
             <div v-if="row.storyboard && row.storyboard.shots && row.storyboard.shots.length" class="storyboard-block">
-              <strong>分镜脚本（总时长 {{ row.storyboard.total_duration }}s）</strong>
+              <strong>{{ row.run_flow === 'flow1' ? '音频脚本' : '分镜脚本' }}（总时长 {{ row.storyboard.total_duration }}s）</strong>
               <el-table :data="row.storyboard.shots" border size="small">
                 <el-table-column prop="index" label="#" width="48" />
                 <el-table-column prop="duration" label="时长" width="70"><template #default="{ row: s }">{{ s.duration }}s</template></el-table-column>
-                <el-table-column prop="scene" label="画面描述" min-width="180" />
+                <!-- 流程二才有画面描述 -->
+                <el-table-column v-if="row.run_flow !== 'flow1'" prop="scene" label="画面描述" min-width="180" />
                 <!-- 流程一：展示旁白文案；流程二：展示生成提示词供复制到 AI 视频工具 -->
-                <el-table-column v-if="row.run_flow === 'flow1'" label="旁白文案（自动配音）" min-width="260"><template #default="{ row: s }">{{ s.narration || "—" }}</template></el-table-column>
+                <el-table-column v-if="row.run_flow === 'flow1'" label="旁白文案（自动配音）" min-width="300"><template #default="{ row: s }">{{ s.narration || "—" }}</template></el-table-column>
                 <el-table-column v-else prop="prompt" label="生成提示词（复制到 AI 视频工具）" min-width="260" />
                 <!-- 流程二才需要人工上传分镜视频 -->
                 <el-table-column v-if="row.run_flow !== 'flow1'" label="上传该段视频" width="150"><template #default="{ row: s }">

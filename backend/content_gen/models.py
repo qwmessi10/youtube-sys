@@ -5,16 +5,19 @@ from django.db import models
 
 class ContentAgent(models.Model):
     """
-    内容生成系统的两个 Agent 提示词配置（仿 keywords.AgentPrompt）：
-      - metadata：元数据生成 Agent（出标题/描述/封面提示词）
-      - storyboard：脚本分镜生成 Agent（出分镜 JSON）
+    内容生成系统的 Agent 提示词配置（仿 keywords.AgentPrompt）：
+      - metadata：元数据生成 Agent（出标题/描述/封面提示词），流程一/流程二共用
+      - storyboard：脚本分镜生成 Agent（出分镜 JSON），流程二用（人工按分镜拍视频）
+      - narration：音频脚本生成 Agent（只出旁白文案），流程一用（画面由 Remotion 模板定）
     名称/用途/类型固定，只允许改 prompt 和 enabled。
     """
     AGENT_METADATA = "metadata"
     AGENT_STORYBOARD = "storyboard"
+    AGENT_NARRATION = "narration"
     AGENT_TYPE_CHOICES = [
         (AGENT_METADATA, "元数据生成 Agent"),
         (AGENT_STORYBOARD, "脚本分镜生成 Agent"),
+        (AGENT_NARRATION, "音频脚本生成 Agent"),
     ]
 
     agent_type = models.CharField(max_length=32, choices=AGENT_TYPE_CHOICES, unique=True)
@@ -32,9 +35,47 @@ class ContentAgent(models.Model):
         return self.name
 
 
+class VideoTemplate(models.Model):
+    """
+    视频模板（流程一批量出片用）。
+    一个模板 = 数据库这条元信息（尺寸/变量声明/默认素材/AI分析规格）
+             + render 项目里对应的一段 Remotion 组件代码（用 composition_id 关联）。
+    上传参考视频后由 Gemini 分析出规格（analysis），据此人工把组件调到位再复用批量出片。
+    """
+    name = models.CharField(max_length=200)                       # 模板名
+    description = models.CharField(max_length=500, blank=True)    # 模板说明
+    # 画面尺寸，默认横屏 1080p（参考视频即 1280x720，成片走 1920x1080）
+    width = models.PositiveIntegerField(default=1920)
+    height = models.PositiveIntegerField(default=1080)
+    fps = models.PositiveSmallIntegerField(default=30)
+    # 关联 render 项目里 Root.tsx 注册的 Composition id；没接入组件前可为空
+    composition_id = models.CharField(max_length=100, blank=True)
+    # 变量声明：创建任务时据此动态渲染输入框。
+    # 形如 [{"key":"promo_code","label":"优惠码","required":true,"ai_editable":false}]
+    # ai_editable=false 表示该值必须由用户提供、AI 不得生成（如 promo code）。
+    variables_schema = models.JSONField(default=list, blank=True)
+    # 默认素材：做模板要用的录屏/logo 等，形如 [{"key":"screen_record","file":"content/templates/.../x.mp4","name":"注册录屏"}]
+    assets = models.JSONField(default=list, blank=True)
+    # Gemini 对参考视频的分析规格（布局/文字/配色/转场/分镜时间戳等），供调模板参考。
+    analysis = models.JSONField(default=dict, blank=True)
+    # 上传的参考视频（供分析）。用 FileField 避免额外依赖。
+    source_video = models.FileField(upload_to="content/templates/source/", blank=True, null=True)
+    enabled = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return self.name
+
+
 class ContentRun(models.Model):
     """
-    一次内容生成任务批次。一个批次可含多个关键词，每个关键词一条 ContentItem。
+    一次内容生成任务批次。
+    流程二：一个批次含多个关键词，每个关键词一条 ContentItem（人工上传视频合并）。
+    流程一：一个关键词 + 一个模板 + N 组变量 → N 条 ContentItem（每条一个视频，AI 内容独立生成）。
     沿用关键词系统的 task_token 暂停/停止机制与 run_log 工作日志。
     """
     STATUS_PENDING = "pending"
@@ -66,7 +107,15 @@ class ContentRun(models.Model):
     # 分镜段数与每段时长：可变参数，默认 8+8（两段各 8s）。现阶段用默认。
     shot_count = models.PositiveSmallIntegerField(default=2)
     shot_duration = models.PositiveSmallIntegerField(default=8)
-    # 流程一专用：创建任务时手填一个 promo code，整批关键词共用，渲染时注入模板。
+    # 流程一专用：选用的视频模板（必选）。流程二为空。
+    template = models.ForeignKey(
+        VideoTemplate, on_delete=models.PROTECT, null=True, blank=True, related_name="runs"
+    )
+    # 流程一专用：本次要生成的视频数量（方案a：数字框直接指定）。
+    # 若上传了变量文件（方案b），实际条数以文件行数为准，此值仅作参考。
+    video_count = models.PositiveSmallIntegerField(default=1)
+    # 流程一专用：创建任务时手填的共享优惠码（整批共用一组变量时用），渲染时注入模板。
+    # 每视频不同变量时改由 ContentItem.variables 承载。
     promo_code = models.CharField(max_length=64, blank=True)
     # 流程一专用：旁白 TTS 引擎，默认 edge。
     tts_provider = models.CharField(max_length=16, choices=TTS_CHOICES, default=TTS_EDGE)
@@ -107,6 +156,9 @@ class ContentItem(models.Model):
     run = models.ForeignKey(ContentRun, on_delete=models.CASCADE, related_name="items")
     keyword = models.CharField(max_length=255)
     status = models.CharField(max_length=16, choices=STATUS_CHOICES, default=STATUS_PENDING)
+    # 流程一专用：该视频这一组变量的值，形如 {"promo_code":"75EPL","bonus":"100%"}。
+    # 渲染时注入模板画面；文案里的 {promo_code} 占位符也用它替换。流程二为空。
+    variables = models.JSONField(default=dict, blank=True)
 
     # 元数据 Agent 产出
     title = models.CharField(max_length=500, blank=True)
@@ -135,8 +187,9 @@ class ContentItem(models.Model):
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
-        ordering = ["keyword"]
-        constraints = [models.UniqueConstraint(fields=["run", "keyword"], name="unique_keyword_per_content_run")]
+        # 流程一同一关键词会产出多条（每条一个视频），故不再约束 run+keyword 唯一。
+        # 流程二在创建接口内已对关键词去重，去掉约束不影响其行为。
+        ordering = ["created_at"]
 
     def __str__(self):
         return self.keyword

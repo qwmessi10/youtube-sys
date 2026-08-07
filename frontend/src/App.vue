@@ -4,6 +4,7 @@ import axios from "axios";
 import { ElMessage } from "element-plus";
 import ContentTasks from "./components/ContentTasks.vue";
 import ContentAgents from "./components/ContentAgents.vue";
+import VideoTemplates from "./components/VideoTemplates.vue";
 
 // 当前菜单从 localStorage 恢复，刷新后停留在原页面而不是跳回默认。
 const activeMenu = ref(localStorage.getItem("activeMenu") || "tasks");
@@ -41,7 +42,7 @@ let sePollTimer = null;            // 运行中任务的进度轮询定时器
 
 const menuTitles = {
   tasks: "任务管理", agents: "关键词 Agent 管理", "suggest-expand": "获取 Suggest API 长尾词",
-  "content-tasks": "内容生成 - 任务管理", "content-agents": "内容生成 Agent 管理", settings: "全局设置",
+  "content-tasks": "内容生成 - 任务管理", "content-agents": "内容生成 Agent 管理", "video-templates": "内容生成 - 视频模板", settings: "全局设置",
 };
 const menuTitle = computed(() => menuTitles[activeMenu.value] || "关键词系统");
 
@@ -349,6 +350,7 @@ watch(activeMenu, (menu) => {
         <el-sub-menu index="content">
           <template #title>内容生成系统</template>
           <el-menu-item index="content-tasks">任务管理</el-menu-item>
+          <el-menu-item index="video-templates">视频模板</el-menu-item>
           <el-menu-item index="content-agents">内容生成 Agent 管理</el-menu-item>
         </el-sub-menu>
         <el-sub-menu index="tools">
@@ -506,6 +508,7 @@ watch(activeMenu, (menu) => {
           </el-card>
         </template>
         <ContentTasks v-else-if="activeMenu === 'content-tasks'" :options="options" :injected-keywords="injectedKeywords" />
+        <VideoTemplates v-else-if="activeMenu === 'video-templates'" />
         <ContentAgents v-else-if="activeMenu === 'content-agents'" />
         <el-card v-else-if="activeMenu === 'settings'" shadow="never">
           <template #header><strong>第三方 API 与 AI 接入配置</strong></template>

@@ -1,6 +1,6 @@
-import csv
 import io
 import json
+import math
 import os
 import uuid
 import zipfile
@@ -24,25 +24,14 @@ from .serializers import (
     ContentRunSerializer,
     VideoTemplateSerializer,
 )
-from .services import analyze_reference_video, get_default_agent_prompt
+from .services import (
+    analyze_reference_video,
+    detect_scene_changes,
+    extract_keyframes,
+    get_default_agent_prompt,
+    probe_video_duration,
+)
 from .tasks import merge_content_item, process_content_run, regenerate_content_item
-
-
-def _parse_variables_csv(upload):
-    """
-    解析上传的变量 CSV：首行为变量名（表头），其后每行一组变量 = 一个视频。
-    返回变量字典列表 [{"promo_code":"75EPL","bonus":"100%"}, ...]。
-    """
-    raw = upload.read()
-    text = raw.decode("utf-8-sig", errors="replace")  # utf-8-sig 兼容 Excel 导出的 BOM
-    reader = csv.DictReader(io.StringIO(text))
-    groups = []
-    for row in reader:
-        # 去掉空表头列、空白值前后空格
-        group = {(k or "").strip(): (v or "").strip() for k, v in row.items() if (k or "").strip()}
-        if any(group.values()):  # 跳过整行空的
-            groups.append(group)
-    return groups
 
 
 class ContentAgentViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, mixins.UpdateModelMixin, viewsets.GenericViewSet):
@@ -86,9 +75,28 @@ class VideoTemplateViewSet(viewsets.ModelViewSet):
             result = analyze_reference_video(video_abs)
         except Exception as exc:
             return Response({"detail": f"视频分析失败：{exc}"}, status=status.HTTP_502_BAD_GATEWAY)
+
+        # 关键帧抽取：合并「Gemini 认为重要的时间点」+「ffmpeg 客观检测的画面切换点」，
+        # 去重后用 ffmpeg 各截一张图存盘（backend 容器有 ffmpeg）。这些图供开发/AI 对照复刻画面。
+        gemini_kf = result.get("keyframes") or []
+        scene_kf = detect_scene_changes(video_abs)
+        merged_kf = sorted(set(round(float(t), 2) for t in (gemini_kf + scene_kf) if isinstance(t, (int, float))))
+        kf_rel_dir = os.path.join("content", "templates", str(template.id), "keyframes")
+        kf_abs_dir = os.path.join(settings.MEDIA_ROOT, kf_rel_dir)
+        frames = extract_keyframes(video_abs, merged_kf, kf_abs_dir)
+        # 存相对路径（media 下），前端可据此拼 URL 预览。
+        keyframe_records = [
+            {"time": f["time"], "file": os.path.join(kf_rel_dir, f["name"]).replace("\\", "/")}
+            for f in frames
+        ]
+
         template.analysis = {
             "model": result.get("model"),
             "text": result.get("text"),
+            "spec": result.get("spec") or {},                 # 结构化规格（canvas/regions/shots）
+            "keyframes": keyframe_records,                     # 抽好的关键帧图（时间+相对路径）
+            "keyframe_times": merged_kf,                        # 合并后的关键帧时间点（供追溯）
+            "scene_change_times": scene_kf,                    # ffmpeg 客观检测到的切换点
             "analyzed_at": timezone.now().isoformat(),
             "source_name": upload.name,
             "suggested_variables": result.get("suggested_variables") or [],
@@ -119,7 +127,12 @@ class VideoTemplateViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=["post"], parser_classes=[MultiPartParser, FormParser])
     def upload_asset(self, request, pk=None):
-        """上传模板素材（录屏/logo 等）。参数：key（素材标识）、file。"""
+        """
+        上传模板素材（录屏/logo 等）。参数：key（素材标识）、file。
+        - 若上传的是视频素材：用 ffprobe 读时长存进 asset.duration，并按其时长自动设定
+          模板总时长（段数 = ceil((素材时长 + 缓冲) / 每段时长)），保证模板时长 > 素材时长，
+          素材播完后画面冻结在最后一帧（由 Remotion 组件处理）。
+        """
         template = self.get_object()
         key = (request.data.get("key") or "").strip()
         upload = request.FILES.get("file")
@@ -133,10 +146,36 @@ class VideoTemplateViewSet(viewsets.ModelViewSet):
         with open(abs_path, "wb") as dest:
             for chunk in upload.chunks():
                 dest.write(chunk)
+
+        # 视频素材读时长（图片/字体等读不到会返回 None，忽略）。
+        duration = None
+        ext = os.path.splitext(upload.name)[1].lower()
+        if ext in {".mp4", ".mov", ".webm", ".mkv", ".m4v"}:
+            duration = probe_video_duration(abs_path)
+
+        # 覆盖同 key 素材，但保留原来的 source（AI/upload）等声明字段，避免丢失。
+        prev = next((a for a in (template.assets or []) if a.get("key") == key), {})
         assets = [a for a in (template.assets or []) if a.get("key") != key]
-        assets.append({"key": key, "file": rel_path, "name": upload.name})
+        # 素材显示名优先用槽位声明里的 name（如“手机操作录屏”），没有再退回文件名。
+        slot = next((s for s in (template.assets_schema or []) if s.get("key") == key), {})
+        display_name = slot.get("name") or upload.name
+        new_asset = {**prev, "key": key, "file": rel_path, "name": display_name, "filename": upload.name}
+        if duration is not None:
+            new_asset["duration"] = round(duration, 2)
+        assets.append(new_asset)
         template.assets = assets
-        template.save(update_fields=["assets", "updated_at"])
+        update_fields = ["assets", "updated_at"]
+
+        # 按素材时长自动设定模板总时长（仅当读到时长时）：
+        # 段数 = ceil((素材时长 + 2秒缓冲) / 每段时长)，保证 段数×每段 > 素材时长。
+        if duration is not None:
+            per = template.shot_duration or 8
+            new_count = max(1, math.ceil((duration + 2) / per))
+            if new_count != template.shot_count:
+                template.shot_count = new_count
+                update_fields.append("shot_count")
+
+        template.save(update_fields=update_fields)
         return Response(VideoTemplateSerializer(template, context={"request": request}).data)
 
 
@@ -182,6 +221,8 @@ class ContentRunViewSet(mixins.ListModelMixin, mixins.CreateModelMixin, mixins.R
         serializer = self.get_serializer(data=self._normalize_create_data(request))
         serializer.is_valid(raise_exception=True)
         keywords = serializer.validated_data.pop("keywords")
+        # 流程一的模板变量取值（所有视频共用一组），从校验数据里取出，不进 run 模型。
+        shared_vars = serializer.validated_data.pop("variables", None) or {}
         # 去重去空，保持顺序
         keywords = list(dict.fromkeys(kw.strip() for kw in keywords if kw.strip()))
         if not keywords:
@@ -191,20 +232,11 @@ class ContentRunViewSet(mixins.ListModelMixin, mixins.CreateModelMixin, mixins.R
 
         if run.flow == ContentRun.FLOW_AUTO:
             # 流程一：一个关键词 + 一个模板 + N 组变量 → N 条 item。
+            # 一个关键词一个任务，按 video_count 复制 N 条，每条共用同一组模板变量。
             keyword = keywords[0]  # 流程一只取第一个关键词
-            var_file = request.FILES.get("variables_file")
-            if var_file:
-                # 方案b：变量文件，每行一组变量 = 一个视频
-                groups = _parse_variables_csv(var_file)
-                if not groups:
-                    run.delete()
-                    return Response({"detail": "变量文件为空或无有效数据行。"}, status=status.HTTP_400_BAD_REQUEST)
-            else:
-                # 方案a：数字框指定条数，所有视频共用一组变量（含手填的 promo_code）
-                shared = {}
-                if (run.promo_code or "").strip():
-                    shared["promo_code"] = run.promo_code.strip()
-                groups = [dict(shared) for _ in range(max(1, run.video_count))]
+            # 变量取值统一放进 item.variables（promo_code 等都在这里，不再特殊处理）。
+            shared = {k: str(v).strip() for k, v in shared_vars.items() if str(v).strip()}
+            groups = [dict(shared) for _ in range(max(1, run.video_count))]
             ContentItem.objects.bulk_create([
                 ContentItem(run=run, keyword=keyword, variables=g) for g in groups
             ])

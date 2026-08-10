@@ -14,11 +14,10 @@ const props = defineProps({
 const form = ref({
   name: "", flow: "flow2", country: "US", language: "en",
   shot_count: 2, shot_duration: 8, keywordsText: "",
-  promo_code: "", tts_provider: "edge",   // 流程一专用
-  // 流程一模板与批量：template=模板id，video_count=方案a条数，
-  // batchMode='count'|'csv'，variables=模板变量取值，variablesFile=方案b上传文件。
-  template: null, video_count: 1, batchMode: "count",
-  variables: {}, variablesFile: null,
+  tts_provider: "edge",   // 流程一专用
+  // 流程一模板与批量：template=模板id，video_count=生成条数，variables=模板变量取值。
+  template: null, video_count: 1,
+  variables: {},
 });
 const templates = ref([]);          // 可选视频模板列表（流程一）
 const creating = ref(false);
@@ -122,40 +121,31 @@ async function createRun() {
   if (keywords.length === 0) return ElMessage.warning("请至少输入一个关键词");
   if (isFlow1.value) {
     if (!form.value.template) return ElMessage.warning("流程一必须选择视频模板");
-    // 校验模板声明的必填变量（仅方案a：数字框共享变量时校验）
-    if (form.value.batchMode === "count") {
-      for (const v of templateVariables.value) {
-        if (v.required && !String(form.value.variables[v.key] || "").trim()) {
-          return ElMessage.warning(`请填写模板变量：${v.label || v.key}`);
-        }
+    // 校验模板声明的必填变量
+    for (const v of templateVariables.value) {
+      if (v.required && !String(form.value.variables[v.key] || "").trim()) {
+        return ElMessage.warning(`请填写模板变量：${v.label || v.key}`);
       }
-    } else if (!form.value.variablesFile) {
-      return ElMessage.warning("请上传变量文件（CSV），或改用「按数量生成」");
     }
   }
   creating.value = true;
   try {
     let resp;
     if (isFlow1.value) {
-      // 流程一用 FormData 提交（可能带变量文件）
-      const fd = new FormData();
-      fd.append("name", form.value.name);
-      fd.append("flow", "flow1");
-      fd.append("country", form.value.country);
-      fd.append("language", form.value.language);
-      fd.append("shot_count", form.value.shot_count);
-      fd.append("shot_duration", form.value.shot_duration);
-      fd.append("keywords", JSON.stringify(keywords));
-      fd.append("template", form.value.template);
-      fd.append("tts_provider", form.value.tts_provider);
-      if (form.value.batchMode === "count") {
-        fd.append("video_count", form.value.video_count);
-        // 共享变量里若含 promo_code，作为 run.promo_code 传（后端会填进每条 item）
-        if (form.value.variables.promo_code) fd.append("promo_code", form.value.variables.promo_code);
-      } else {
-        fd.append("variables_file", form.value.variablesFile);
-      }
-      resp = await axios.post("/api/content-runs/", fd);
+      // 流程一：模板变量统一作为 variables JSON 提交（不再单独处理 promo_code）
+      resp = await axios.post("/api/content-runs/", {
+        name: form.value.name,
+        flow: "flow1",
+        country: form.value.country,
+        language: form.value.language,
+        shot_count: form.value.shot_count,
+        shot_duration: form.value.shot_duration,
+        keywords,
+        template: form.value.template,
+        tts_provider: form.value.tts_provider,
+        video_count: form.value.video_count,
+        variables: form.value.variables,
+      });
     } else {
       resp = await axios.post("/api/content-runs/", {
         name: form.value.name, flow: "flow2",
@@ -169,20 +159,14 @@ async function createRun() {
     ElMessage.success(`任务已创建${tip}`);
     form.value.keywordsText = "";
     form.value.name = "";
-    form.value.variablesFile = null;
     await loadRuns(1);
   } catch (error) {
     const data = error.response?.data;
-    const msg = data?.detail || (data?.template && data.template[0]) || (data?.promo_code && data.promo_code[0]) || "创建任务失败，请检查输入";
+    const msg = data?.detail || (data?.template && data.template[0]) || "创建任务失败，请检查输入";
     ElMessage.error(msg);
   } finally {
     creating.value = false;
   }
-}
-
-// 变量文件选择
-function onVariablesFileChange(uploadFile) {
-  form.value.variablesFile = uploadFile?.raw || null;
 }
 
 async function controlRun(run, action) {
@@ -350,15 +334,8 @@ onUnmounted(stopPoll);
             <small class="agent-hint" v-else-if="selectedTemplate">{{ selectedTemplate.description || '该模板无说明' }}（旁白 {{ selectedTemplate.shot_count }} 段 × {{ selectedTemplate.shot_duration }}s，由模板决定）</small>
           </el-form-item>
 
-          <el-form-item label="批量方式" v-if="form.template">
-            <el-radio-group v-model="form.batchMode">
-              <el-radio-button label="count">按数量生成（共享变量）</el-radio-button>
-              <el-radio-button label="csv">上传变量文件（每行一个视频）</el-radio-button>
-            </el-radio-group>
-          </el-form-item>
-
-          <!-- 方案a：数字框 + 共享变量 -->
-          <template v-if="form.template && form.batchMode === 'count'">
+          <!-- 生成数量 + 模板变量（变量由所选模板的声明动态渲染） -->
+          <template v-if="form.template">
             <el-form :inline="true">
               <el-form-item label="生成视频数量">
                 <el-input-number v-model="form.video_count" :min="1" :max="50" />
@@ -367,21 +344,8 @@ onUnmounted(stopPoll);
                 <el-input v-model="form.variables[v.key]" :placeholder="v.required ? '必填' : '选填'" style="width: 180px" />
               </el-form-item>
             </el-form>
-            <small class="agent-hint">共 {{ form.video_count }} 个视频共用上面这组变量；每个视频的标题/描述/封面/旁白由 AI 独立生成，各不相同。</small>
-          </template>
-
-          <!-- 方案b：上传 CSV -->
-          <template v-else-if="form.template && form.batchMode === 'csv'">
-            <el-form-item label="变量文件（CSV，首行为变量名，每行一个视频）">
-              <el-upload :show-file-list="true" :auto-upload="false" :limit="1" accept=".csv"
-                :on-change="(f) => onVariablesFileChange(f)" :on-remove="() => (form.variablesFile = null)">
-                <el-button plain>选择 CSV 文件</el-button>
-              </el-upload>
-              <small class="agent-hint">
-                表头填模板变量名（如 promo_code）。有几行数据就生成几个视频。
-                该模板变量：{{ templateVariables.map((v) => v.key).join('、') || '（无）' }}
-              </small>
-            </el-form-item>
+            <small class="agent-hint" v-if="templateVariables.length">共 {{ form.video_count }} 个视频共用上面这组变量；每个视频的标题/描述/封面/旁白由 AI 独立生成，各不相同。</small>
+            <small class="agent-hint" v-else>该模板没有需要填写的变量；共生成 {{ form.video_count }} 个视频，标题/描述/封面/旁白由 AI 独立生成。</small>
           </template>
         </template>
         <el-form :inline="true">

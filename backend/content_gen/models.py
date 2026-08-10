@@ -9,15 +9,19 @@ class ContentAgent(models.Model):
       - metadata：元数据生成 Agent（出标题/描述/封面提示词），流程一/流程二共用
       - storyboard：脚本分镜生成 Agent（出分镜 JSON），流程二用（人工按分镜拍视频）
       - narration：音频脚本生成 Agent（只出旁白文案），流程一用（画面由 Remotion 模板定）
+      - video_analysis：视频分析 Agent（分析参考视频、产出结构化模板规格 + 关键帧时间点），
+        用于「上传参考视频 → 复刻成模板」。提示词决定分析的精细程度。
     名称/用途/类型固定，只允许改 prompt 和 enabled。
     """
     AGENT_METADATA = "metadata"
     AGENT_STORYBOARD = "storyboard"
     AGENT_NARRATION = "narration"
+    AGENT_VIDEO_ANALYSIS = "video_analysis"
     AGENT_TYPE_CHOICES = [
         (AGENT_METADATA, "元数据生成 Agent"),
         (AGENT_STORYBOARD, "脚本分镜生成 Agent"),
         (AGENT_NARRATION, "音频脚本生成 Agent"),
+        (AGENT_VIDEO_ANALYSIS, "视频分析 Agent"),
     ]
 
     agent_type = models.CharField(max_length=32, choices=AGENT_TYPE_CHOICES, unique=True)
@@ -69,7 +73,12 @@ class VideoTemplate(models.Model):
     # 形如 [{"key":"promo_code","label":"优惠码","required":true,"ai_editable":false}]
     # ai_editable=false 表示该值必须由用户提供、AI 不得生成（如 promo code）。
     variables_schema = models.JSONField(default=list, blank=True)
-    # 默认素材：做模板要用的录屏/logo 等，形如 [{"key":"screen_record","file":"content/templates/.../x.mp4","name":"注册录屏"}]
+    # 素材槽位声明：模板需要哪些素材，供前端列出「命名槽位 + 说明 + 对应上传按钮」，运营无需手打 key。
+    # 形如 [{"key":"screen_record","name":"手机操作录屏","desc":"注册流程录屏 mp4，显示在画面右侧","required":true,"source":"upload"}]
+    # source: upload=人工上传 / ai=AI 生成。由开发定义（key 要和 Remotion 组件里访问的 key 一致）。
+    assets_schema = models.JSONField(default=list, blank=True)
+    # 默认素材：实际上传的文件（按 assets_schema 的槽位 key 存放），
+    # 形如 [{"key":"screen_record","file":"content/templates/.../x.mp4","name":"注册录屏","duration":16.0}]
     assets = models.JSONField(default=list, blank=True)
     # Gemini 对参考视频的分析规格（布局/文字/配色/转场/分镜时间戳等），供调模板参考。
     analysis = models.JSONField(default=dict, blank=True)

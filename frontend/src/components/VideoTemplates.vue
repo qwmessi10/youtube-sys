@@ -66,6 +66,7 @@ function openEdit(t) {
   // 深拷贝，避免直接改列表数据
   editing.value = JSON.parse(JSON.stringify(t));
   if (!Array.isArray(editing.value.variables_schema)) editing.value.variables_schema = [];
+  if (!Array.isArray(editing.value.assets_schema)) editing.value.assets_schema = [];
   // 根据宽高回显比例选择
   editing.value.ratio = ratioOf(editing.value.width, editing.value.height);
   drawer.value = true;
@@ -91,6 +92,7 @@ async function saveTemplate() {
       shot_count: editing.value.shot_count,
       shot_duration: editing.value.shot_duration,
       variables_schema: editing.value.variables_schema,
+      assets_schema: editing.value.assets_schema,
       enabled: editing.value.enabled,
       // 组件ID / status 由开发在后台维护，运营侧不提交。
     };
@@ -133,23 +135,39 @@ async function analyzeVideo(uploadFile) {
   }
 }
 
-// 上传素材
-const assetKey = ref("");
-async function uploadAsset(uploadFile) {
+// 上传素材：key 直接来自槽位声明（不再手打），uploadFile 由 el-upload 传入。
+const uploadingKey = ref("");
+async function uploadAsset(slotKey, uploadFile) {
   const file = uploadFile?.raw;
   if (!file) return;
-  if (!assetKey.value.trim()) return ElMessage.warning("请先填写素材标识（如 screen_record）");
+  uploadingKey.value = slotKey;
   try {
     const fd = new FormData();
-    fd.append("key", assetKey.value.trim());
+    fd.append("key", slotKey);
     fd.append("file", file);
     const { data } = await axios.post(`/api/video-templates/${editing.value.id}/upload_asset/`, fd);
     editing.value = data;
-    ElMessage.success(`素材「${assetKey.value}」已上传`);
-    assetKey.value = "";
+    editing.value.ratio = ratioOf(data.width, data.height);
+    ElMessage.success(`素材「${slotKey}」已上传`);
   } catch (error) {
     ElMessage.error(error.response?.data?.detail || "素材上传失败");
+  } finally {
+    uploadingKey.value = "";
   }
+}
+
+// 已上传素材：按槽位 key 取回文件记录（用于显示“已上传/未上传”与文件名）。
+function uploadedAsset(key) {
+  return (editing.value.assets || []).find((a) => a.key === key) || null;
+}
+
+// 素材槽位声明的增删（和变量声明对称，供开发/运营定义模板需要哪些素材）。
+function addAssetSlot() {
+  if (!Array.isArray(editing.value.assets_schema)) editing.value.assets_schema = [];
+  editing.value.assets_schema.push({ key: "", name: "", desc: "", required: true, source: "upload" });
+}
+function removeAssetSlot(i) {
+  editing.value.assets_schema.splice(i, 1);
 }
 
 function datetime(v) {
@@ -251,18 +269,85 @@ onMounted(loadTemplates);
               {{ sv.label || sv.key }}（{{ sv.key }}）{{ sv.ai_editable ? '' : '·人工提供' }}
             </el-tag>
           </div>
-          <pre class="analysis-pre">{{ editing.analysis.text }}</pre>
+
+          <!-- 关键帧图：ffmpeg 按 Gemini 关键帧时间点 + 场景检测切换点抽出的真实画面帧，
+               供开发/AI 对照复刻画面（比纯文字描述精确得多）。点图可放大。 -->
+          <div v-if="(editing.keyframe_images || []).length" class="keyframes">
+            <span class="hint">关键帧截图（共 {{ editing.keyframe_images.length }} 张，供对照原画面复刻）：</span>
+            <div class="kf-grid">
+              <div v-for="(kf, i) in editing.keyframe_images" :key="i" class="kf-item">
+                <el-image
+                  :src="kf.url" fit="cover" class="kf-img"
+                  :preview-src-list="editing.keyframe_images.map(k => k.url)"
+                  :initial-index="i" :preview-teleported="true"
+                />
+                <span class="kf-time">{{ Number(kf.time).toFixed(2) }}s</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- 结构化规格：Gemini 给出的画面布局 JSON（区域坐标/文字/配色/分镜），
+               目前以折叠 JSON 呈现，开发复刻时对照。 -->
+          <el-collapse v-if="editing.analysis.spec && Object.keys(editing.analysis.spec).length" class="spec-collapse">
+            <el-collapse-item title="结构化布局规格（区域坐标 / 文字 / 配色 / 分镜）">
+              <pre class="analysis-pre">{{ JSON.stringify(editing.analysis.spec, null, 2) }}</pre>
+            </el-collapse-item>
+          </el-collapse>
+
+          <el-collapse class="spec-collapse">
+            <el-collapse-item title="完整文字分析">
+              <pre class="analysis-pre">{{ editing.analysis.text }}</pre>
+            </el-collapse-item>
+          </el-collapse>
         </div>
 
-        <el-divider content-position="left">默认素材</el-divider>
-        <div class="asset-upload">
-          <el-input v-model="assetKey" placeholder="素材标识，如 screen_record" style="width: 220px" />
-          <el-upload :show-file-list="false" :auto-upload="false" :on-change="uploadAsset">
-            <el-button plain>上传素材文件</el-button>
-          </el-upload>
+        <el-divider content-position="left">素材槽位声明</el-divider>
+        <small class="hint">
+          声明这个模板需要哪些素材（每个槽位对应画面里一处，如“手机操作录屏”）。标识 key 必须和画面组件里访问的一致（由开发定义，运营勿改）。
+          声明后，下方「素材上传」会按槽位列出上传按钮，无需手打标识。来源=AI 生成的素材出片时由系统自动生成，不用在这里上传。
+        </small>
+        <div v-for="(s, i) in editing.assets_schema" :key="i" class="asset-slot-row">
+          <el-input v-model="s.key" placeholder="标识 key（如 screen_record）" style="width: 180px" />
+          <el-input v-model="s.name" placeholder="显示名（如 手机操作录屏）" style="width: 160px" />
+          <el-input v-model="s.desc" placeholder="说明（这个素材是什么/放哪）" style="width: 220px" />
+          <el-select v-model="s.source" style="width: 120px">
+            <el-option label="人工上传" value="upload" />
+            <el-option label="AI 生成" value="ai" />
+          </el-select>
+          <el-checkbox v-model="s.required">必需</el-checkbox>
+          <el-button size="small" type="danger" plain @click="removeAssetSlot(i)">删除</el-button>
         </div>
-        <div class="asset-list">
-          <el-tag v-for="a in (editing.assets || [])" :key="a.key" type="success" effect="plain" class="asset-tag">{{ a.key }}：{{ a.name }}</el-tag>
+        <el-button size="small" plain @click="addAssetSlot">+ 添加素材槽位</el-button>
+
+        <el-divider content-position="left">素材上传</el-divider>
+        <small v-if="!(editing.assets_schema || []).length" class="hint">还没有素材槽位。请先在上方「素材槽位声明」添加槽位（或上传参考视频让 AI 分析后自动补全）。</small>
+        <div v-for="(s, i) in (editing.assets_schema || [])" :key="'up' + i" class="asset-upload-row">
+          <div class="asset-upload-info">
+            <div class="asset-upload-name">
+              {{ s.name || s.key }}
+              <el-tag v-if="s.required" size="small" type="danger" effect="plain">必需</el-tag>
+              <el-tag size="small" :type="s.source === 'ai' ? 'info' : 'warning'" effect="plain">{{ s.source === 'ai' ? 'AI 生成' : '人工上传' }}</el-tag>
+            </div>
+            <div class="asset-upload-desc">
+              <span class="asset-key-code">{{ s.key }}</span>
+              <span v-if="s.desc"> · {{ s.desc }}</span>
+            </div>
+            <div v-if="uploadedAsset(s.key)" class="asset-uploaded">
+              ✓ 已上传：{{ uploadedAsset(s.key).filename || uploadedAsset(s.key).name }}
+              <span v-if="uploadedAsset(s.key).duration">（{{ uploadedAsset(s.key).duration }}s）</span>
+            </div>
+            <div v-else class="asset-notyet">尚未上传</div>
+          </div>
+          <el-upload
+            v-if="s.source !== 'ai'"
+            :show-file-list="false" :auto-upload="false"
+            :on-change="(f) => uploadAsset(s.key, f)"
+          >
+            <el-button plain :loading="uploadingKey === s.key">
+              {{ uploadedAsset(s.key) ? '重新上传' : '上传素材文件' }}
+            </el-button>
+          </el-upload>
+          <span v-else class="asset-ai-note">出片时自动生成</span>
         </div>
 
         <div class="save-bar">
@@ -285,8 +370,20 @@ onMounted(loadTemplates);
 .suggest-vars { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 6px 0; }
 .analysis { margin-top: 10px; }
 .analysis-pre { white-space: pre-wrap; word-break: break-word; background: #f5f7fa; border-radius: 6px; padding: 10px 12px; font-size: 12px; line-height: 1.6; max-height: 400px; overflow: auto; }
-.asset-upload { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
-.asset-list { display: flex; flex-wrap: wrap; gap: 8px; }
-.asset-tag { margin-right: 4px; }
+.keyframes { margin: 10px 0; }
+.kf-grid { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 4px; }
+.kf-item { position: relative; width: 160px; }
+.kf-img { width: 160px; height: 90px; border-radius: 6px; border: 1px solid #dcdfe6; cursor: pointer; }
+.kf-time { position: absolute; left: 4px; bottom: 4px; background: rgba(0,0,0,0.6); color: #fff; font-size: 11px; padding: 1px 5px; border-radius: 3px; }
+.spec-collapse { margin-top: 10px; }
+.asset-slot-row { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+.asset-upload-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 12px; border: 1px solid #ebeef5; border-radius: 8px; margin-bottom: 8px; }
+.asset-upload-info { flex: 1; }
+.asset-upload-name { font-weight: 600; display: flex; align-items: center; gap: 6px; }
+.asset-upload-desc { color: #909399; font-size: 12px; margin-top: 2px; }
+.asset-key-code { font-family: monospace; background: #f0f2f5; padding: 1px 6px; border-radius: 4px; color: #606266; }
+.asset-uploaded { color: #67c23a; font-size: 12px; margin-top: 4px; }
+.asset-notyet { color: #e6a23c; font-size: 12px; margin-top: 4px; }
+.asset-ai-note { color: #909399; font-size: 12px; }
 .save-bar { margin-top: 24px; }
 </style>

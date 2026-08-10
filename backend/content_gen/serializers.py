@@ -7,6 +7,7 @@ from .models import ContentAgent, ContentItem, ContentRun, VideoTemplate
 
 class VideoTemplateSerializer(serializers.ModelSerializer):
     source_video_url = serializers.SerializerMethodField()
+    keyframe_images = serializers.SerializerMethodField()  # 关键帧图（带可访问 URL），供前端预览
     run_count = serializers.IntegerField(source="runs.count", read_only=True)
     status_label = serializers.CharField(source="get_status_display", read_only=True)
 
@@ -15,13 +16,31 @@ class VideoTemplateSerializer(serializers.ModelSerializer):
         fields = [
             "id", "name", "description", "width", "height", "fps",
             "shot_count", "shot_duration", "status", "status_label", "adjust_notes",
-            "composition_id", "variables_schema", "assets", "analysis",
-            "source_video_url", "enabled", "run_count", "created_at", "updated_at",
+            "composition_id", "variables_schema", "assets_schema", "assets", "analysis",
+            "source_video_url", "keyframe_images", "enabled", "run_count", "created_at", "updated_at",
         ]
         read_only_fields = ["analysis", "assets"]
 
     def get_source_video_url(self, obj):
         return obj.source_video.url if obj.source_video else ""
+
+    def get_keyframe_images(self, obj):
+        """
+        把 analysis.keyframes 里的相对路径补成 /media/ 可访问 URL，供前端预览。
+        返回 [{"time": 秒, "url": "/media/..."}, ...]，按时间升序。
+        """
+        from django.conf import settings
+
+        media_url = settings.MEDIA_URL if settings.MEDIA_URL.startswith("/") else "/" + settings.MEDIA_URL
+        media_url = media_url.rstrip("/") + "/"
+        frames = (obj.analysis or {}).get("keyframes") or []
+        out = []
+        for f in frames:
+            rel = (f or {}).get("file")
+            if not rel:
+                continue
+            out.append({"time": f.get("time"), "url": media_url + str(rel).lstrip("/")})
+        return sorted(out, key=lambda x: (x.get("time") is None, x.get("time")))
 
 
 class ContentAgentSerializer(serializers.ModelSerializer):
@@ -75,9 +94,11 @@ class ContentRunCreateSerializer(ContentRunSerializer):
     keywords = serializers.ListField(
         child=serializers.CharField(max_length=255), write_only=True, allow_empty=False,
     )
+    # 流程一模板变量取值 {"promo_code": "..."}，所有视频共用这一组；视图复制到每条 item。
+    variables = serializers.DictField(required=False, write_only=True, default=dict)
 
     class Meta(ContentRunSerializer.Meta):
-        fields = ContentRunSerializer.Meta.fields + ["keywords"]
+        fields = ContentRunSerializer.Meta.fields + ["keywords", "variables"]
 
     def validate(self, attrs):
         # 流程一（全自动）必须选择一个「已就绪」的视频模板，画面由模板决定。

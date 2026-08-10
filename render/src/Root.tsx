@@ -3,6 +3,8 @@
 import { Composition } from "remotion";
 import { PromoVideo, promoSchema, defaultPromoProps } from "./PromoVideo";
 import { SplitScreenPromo, splitScreenSchema, defaultSplitScreenProps } from "./SplitScreenPromo";
+import { RegistrationPromo, registrationSchema, defaultRegistrationProps } from "./RegistrationPromo";
+import { RegistrationPromoV2, registrationV2Schema, defaultRegistrationV2Props } from "./RegistrationPromoV2";
 
 const FPS = 30;
 
@@ -37,6 +39,30 @@ export const RemotionRoot: React.FC = () => {
         height={1080}
         schema={splitScreenSchema}
         defaultProps={defaultSplitScreenProps}
+        calculateMetadata={durationFromProps}
+      />
+      {/* 注册教程推广模板（复刻 1xBet，左 AI 背景+优惠码 / 右人工录屏） */}
+      <Composition
+        id="RegistrationPromo"
+        component={RegistrationPromo}
+        durationInFrames={16 * FPS}
+        fps={FPS}
+        width={1920}
+        height={1080}
+        schema={registrationSchema}
+        defaultProps={defaultRegistrationProps}
+        calculateMetadata={durationFromProps}
+      />
+      {/* 注册教程推广模板 V2（按 Gemini 精细分析复刻：黄底+开场免责声明+左金边绿徽章+右录屏）*/}
+      <Composition
+        id="RegistrationPromoV2"
+        component={RegistrationPromoV2}
+        durationInFrames={16 * FPS}
+        fps={FPS}
+        width={1920}
+        height={1080}
+        schema={registrationV2Schema}
+        defaultProps={defaultRegistrationV2Props}
         calculateMetadata={durationFromProps}
       />
     </>

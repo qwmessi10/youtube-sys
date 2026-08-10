@@ -89,11 +89,15 @@ shots 数组必须恰好包含 {shot_count} 个元素，index 从 1 递增。
 重要：每段 narration 是要被朗读的旁白，必须简短，**每段不超过 {narration_word_limit} 个单词**，确保朗读时长不超过 {shot_duration} 秒。
 如需在旁白中提及优惠码，请原样使用占位符 {{promo_code}}（不要自己编造优惠码），系统会在渲染时替换成真实优惠码。"""
 
+# 视频分析 Agent 的默认提示词定义在下方 DEFAULT_VIDEO_ANALYSIS_PROMPT，
+# 但那段常量在本行之后才定义，这里用惰性方式引用：见 DEFAULT_AGENT_PROMPTS 下方补挂。
+
 # (agent_type) → 内置默认提示词。用于种子回填与「恢复系统默认」。
 DEFAULT_AGENT_PROMPTS = {
     ContentAgent.AGENT_METADATA: DEFAULT_METADATA_PROMPT,
     ContentAgent.AGENT_STORYBOARD: DEFAULT_STORYBOARD_PROMPT,
     ContentAgent.AGENT_NARRATION: DEFAULT_NARRATION_PROMPT,
+    # AGENT_VIDEO_ANALYSIS 的默认提示词在文件后半段定义，见文件末尾补挂。
 }
 
 
@@ -543,6 +547,12 @@ def render_video(*, title, keyword, promo_code, cover_abs_path, shots,
 
     # 素材列表转成 {key: 绝对路径} 映射，供模板按 key 取用。
     asset_map = {a.get("key"): a.get("file") for a in (assets or []) if a.get("key")}
+    # 素材真实时长映射 {key: 秒}，供模板算「视频素材播完冻结在最后一帧」的冻结点。
+    asset_durations = {
+        a.get("key"): a.get("duration")
+        for a in (assets or [])
+        if a.get("key") and a.get("duration")
+    }
 
     input_props = {
         "title": title or "",
@@ -553,6 +563,7 @@ def render_video(*, title, keyword, promo_code, cover_abs_path, shots,
         "shots": prop_shots,
         "variables": variables or {},
         "assets": asset_map,
+        "assetDurations": asset_durations,
     }
 
     body = {"inputProps": input_props, "outPath": output_abs_path}
@@ -581,23 +592,164 @@ def render_video(*, title, keyword, promo_code, cover_abs_path, shots,
 # 关键：必须用 Gemini 的 key + Gemini 模型；视频以 image_url 的 data uri 塞进 chat 接口。
 # （每个 key 只能用一家厂商模型，用 GPT key 喂视频会报 unsupported format。）
 # ---------------------------------------------------------------------------
-VIDEO_ANALYSIS_PROMPT = """你是一位视频模板分析师。请分析这段推广视频，用于复刻成一个可批量套数据的视频模板。
-请按时间戳详细描述：整体画面布局（是否分屏、各区域占比与内容）、屏幕上的文字及其位置、
-字体与配色、动画与转场方式、节奏快慢、分镜场景切分。
-另外请判断这段视频的旁白节奏：建议把旁白拆成几段、每段大约几秒最自然。
-最后，请指出哪些元素是「每条视频会变化的变量」（如优惠码、金额、国家），哪些是固定不变的。
+DEFAULT_VIDEO_ANALYSIS_PROMPT = """你是一位专业的视频模板分析师。你要分析这段推广视频，目标是让开发能「像素级复刻」成一个可批量套数据的 Remotion 视频模板。
+分析要极其精细：不要只写「左边是绿色品牌区」这种笼统描述，而要具体到每个区域的位置、每段文字的内容/字号/颜色/对齐、每个动画的方式。
 
-请严格按以下 JSON 输出（不要输出解释文字或 markdown 代码块标记）：
-{"analysis": "上述完整的中文分析文本", "shot_count": 建议旁白段数(整数), "shot_duration": 每段建议秒数(整数), "suggested_variables": [{"key": "变量名(英文,如 promo_code)", "label": "中文显示名", "ai_editable": false}]}
-其中 suggested_variables 列出你识别到的「每条会变的变量」，优惠码/金额这类必须由人工提供的填 ai_editable=false。"""
+【坐标系约定】所有位置和尺寸都用「相对百分比」表示（不要用像素）：
+  - x/y 是元素左上角相对画面左上角的百分比（0~100）；w/h 是元素宽高占画面的百分比（0~100）。
+  - 例：一个占左侧 40% 宽、满高的面板 = {"x":0,"y":0,"w":40,"h":100}。
+颜色一律用十六进制（如 #0B4F37）；你只需给出「接近的估计值」，不必绝对精确。
+
+【关键帧时间点 keyframes】请列出这段视频里「画面发生明显变化」的时间点（秒，可含小数），
+例如：开场、每次文字/画面切换、转场、结尾定格。这些时间点稍后会被用来自动截图，供开发对照复刻。
+控制在 4~8 个最有代表性的时间点，均匀覆盖全片，别漏掉任何一次大的画面切换。
+
+【变量 vs 固定】指出哪些元素是「每条视频会变的变量」（如优惠码 promo_code、金额、国家、关键词），
+哪些是固定不变的（如品牌名、slogan、按钮文案）。变量要具体到「它出现在画面什么位置」。
+
+请严格只输出一个 JSON 对象（不要输出任何解释文字或 markdown 代码块标记），结构如下：
+{
+  "analysis": "整体分析（中文）：画面风格、分屏结构、节奏、转场、整体观感的文字总结",
+  "canvas": {"aspect": "16:9 或 9:16", "bg_color": "整体背景色 #RRGGBB"},
+  "regions": [
+    {
+      "name": "区域名（如 品牌面板/录屏面板/优惠码框）",
+      "box": {"x":0,"y":0,"w":40,"h":100},
+      "bg_color": "#RRGGBB",
+      "texts": [
+        {"content": "文字内容（若是变量写占位符如 {promo_code}）", "box": {"x":5,"y":40,"w":30,"h":10},
+         "font_size_pct": 文字高度占画面高的百分比(数字), "color": "#RRGGBB",
+         "align": "left/center/right", "weight": "normal/bold", "is_variable": true 或 false}
+      ],
+      "animation": "该区域的入场/强调动画描述（如 从左滑入、弹性放大、无）"
+    }
+  ],
+  "shots": [
+    {"index":1, "start": 起始秒(数字), "end": 结束秒(数字), "scene": "该分镜画面在做什么"}
+  ],
+  "keyframes": [关键帧时间点秒数的数组, 如 [0, 3.5, 7, 11, 15]],
+  "shot_count": 建议旁白段数(整数),
+  "shot_duration": 每段建议秒数(整数),
+  "suggested_variables": [{"key":"变量名(英文,如 promo_code)", "label":"中文显示名", "position":"它在画面什么位置", "ai_editable": false}]
+}
+其中 suggested_variables 里优惠码/金额这类必须由人工提供、AI 不得编造的，填 ai_editable=false。"""
+
+# 兼容旧引用名。
+VIDEO_ANALYSIS_PROMPT = DEFAULT_VIDEO_ANALYSIS_PROMPT
+
+# 补挂视频分析 Agent 的默认提示词到映射表（常量在此处才定义完，故延后补挂）。
+DEFAULT_AGENT_PROMPTS[ContentAgent.AGENT_VIDEO_ANALYSIS] = DEFAULT_VIDEO_ANALYSIS_PROMPT
+
+
+def probe_video_duration(video_abs_path):
+    """
+    用 ffprobe 读视频真实时长（秒，float）。读不到返回 None。
+    用于：上传录屏素材后按其时长自动设定模板总时长；渲染前校验模板时长 > 素材时长。
+    """
+    try:
+        out = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+             "-of", "default=noprint_wrappers=1:nokey=1", video_abs_path],
+            capture_output=True, text=True, timeout=60,
+        )
+        val = (out.stdout or "").strip()
+        return float(val) if val else None
+    except (subprocess.SubprocessError, ValueError, OSError):
+        return None
+
+
+def detect_scene_changes(video_abs_path, threshold=0.3, timeout=120):
+    """
+    用 ffmpeg 场景检测，找出画面「明显切换」的时间点（秒，float 列表，升序）。
+    原理：select='gt(scene,阈值)' 逐帧算与前一帧的差异，超过阈值即视为一次切换。
+    threshold 越小越敏感（0.3 是经验值）。检测不到或出错返回空列表。
+    这是 Gemini 报的关键帧时间点的「客观兜底」，防止漏掉真正换画面的地方。
+    """
+    try:
+        # -vf ... showinfo 会把命中帧的时间戳(pts_time) 打到 stderr，用正则捞出来。
+        out = subprocess.run(
+            ["ffmpeg", "-hide_banner", "-i", video_abs_path,
+             "-vf", f"select='gt(scene,{threshold})',showinfo",
+             "-f", "null", "-"],
+            capture_output=True, text=True, timeout=timeout,
+        )
+        times = []
+        for m in re.finditer(r"pts_time:([0-9.]+)", out.stderr or ""):
+            try:
+                times.append(round(float(m.group(1)), 2))
+            except ValueError:
+                continue
+        return sorted(set(times))
+    except (subprocess.SubprocessError, OSError):
+        return []
+
+
+def extract_keyframes(video_abs_path, timestamps, out_dir, width=960, max_frames=10):
+    """
+    用 ffmpeg 在指定时间点各截一张图，存到 out_dir，返回帧信息列表。
+    - timestamps：时间点列表（秒）。会先排序去重，超过 max_frames 则均匀下采样，避免太多帧撑爆上下文。
+    - width：缩放宽度（高按比例），960 足够看清布局和颜色，又不至于太大。
+    返回 [{"time": 秒, "file": 绝对路径, "name": 文件名}, ...]；单帧失败跳过不报错。
+    抽帧放在 backend 容器做（有 ffmpeg），render 容器没有 ffmpeg。
+    """
+    # 规整时间点：去重排序 + 超量则均匀采样。
+    clean = sorted({round(float(t), 2) for t in (timestamps or []) if _is_number(t) and float(t) >= 0})
+    if not clean:
+        return []
+    if len(clean) > max_frames:
+        step = len(clean) / max_frames
+        clean = [clean[int(i * step)] for i in range(max_frames)]
+
+    # 末尾夹取：seek 到视频最末尾（>=时长）ffmpeg 取不到帧，会漏掉「结尾定格帧」
+    # （结尾 CTA 画面对复刻很重要）。把越界时间点回退到 时长-0.1s，确保能截到最后一帧。
+    dur = probe_video_duration(video_abs_path)
+    if dur:
+        clean = sorted({(t if t < dur - 0.1 else round(dur - 0.1, 2)) for t in clean})
+
+    os.makedirs(out_dir, exist_ok=True)
+    frames = []
+    for i, t in enumerate(clean):
+        name = f"kf_{i:02d}_{t:.2f}s.jpg"
+        abs_path = os.path.join(out_dir, name)
+        try:
+            # -ss 放在 -i 前=快速定位到该时间点；-frames:v 1 只取一帧；scale 缩放宽度、高自适应。
+            r = subprocess.run(
+                ["ffmpeg", "-hide_banner", "-y", "-ss", str(t), "-i", video_abs_path,
+                 "-frames:v", "1", "-vf", f"scale={width}:-1", abs_path],
+                capture_output=True, text=True, timeout=60,
+            )
+            if r.returncode == 0 and os.path.exists(abs_path):
+                frames.append({"time": t, "file": abs_path, "name": name})
+        except (subprocess.SubprocessError, OSError):
+            continue
+    return frames
+
+
+def _is_number(x):
+    try:
+        float(x)
+        return True
+    except (TypeError, ValueError):
+        return False
 
 
 def analyze_reference_video(video_abs_path, prompt=None, timeout=600):
     """
-    调 Gemini 分析参考视频，返回分析文本。
+    调 Gemini 分析参考视频，返回结构化分析规格。
     - video_abs_path：视频文件绝对路径
+    - prompt：分析提示词。传 None 时从「视频分析 Agent」表读（留空则回退内置默认），
+      这样运营可以在后台自行配置分析的精细程度。
     - 用 GEMINI_VIDEO_API_KEY（没配则用 GEMINI_IMAGE_API_KEY）+ Gemini 模型
+    返回 dict：{model, text, spec, keyframes, shot_count?, shot_duration?, suggested_variables?}
+      - text：整体分析文本（analysis 字段）
+      - spec：完整结构化规格（canvas/regions/shots 等），供开发对照复刻
+      - keyframes：关键帧时间点列表（秒），供上层用 ffmpeg 抽帧
     """
+    # 提示词优先级：显式传入 > 后台 Agent 配置 > 内置默认。
+    if prompt is None:
+        prompt, _agent = _get_prompt(ContentAgent.AGENT_VIDEO_ANALYSIS, DEFAULT_VIDEO_ANALYSIS_PROMPT)
+        if prompt is None:  # Agent 被停用，仍回退内置默认，保证分析可用
+            prompt = DEFAULT_VIDEO_ANALYSIS_PROMPT
     base_url = get_setting("AI_BASE_URL", "https://moretokens.ai/v1").rstrip("/")
     api_key = (
         get_setting("GEMINI_VIDEO_API_KEY")
@@ -649,11 +801,23 @@ def analyze_reference_video(video_abs_path, prompt=None, timeout=600):
     if not content.strip():
         raise RuntimeError("视频分析返回为空")
 
-    # 尝试解析结构化 JSON（分析文本 + 建议段数/时长 + 建议变量）。
-    # 解析失败则回退：整段当分析文本，段数/时长/变量留空由上层用默认。
+    # 尝试解析结构化 JSON（分析文本 + 结构规格 + 关键帧 + 建议段数/时长 + 建议变量）。
+    # 解析失败则回退：整段当分析文本，其余字段留空由上层用默认。
     parsed = _extract_json(content) or {}
     text = (parsed.get("analysis") or "").strip() or content
     result = {"model": model, "text": text}
+
+    # spec：完整结构化规格（canvas/regions/shots 等），原样透传给上层存档，供开发复刻对照。
+    spec = {}
+    for field in ("canvas", "regions", "shots"):
+        if parsed.get(field) is not None:
+            spec[field] = parsed[field]
+    if spec:
+        result["spec"] = spec
+
+    # keyframes：关键帧时间点（秒）。规整成升序去重的数字列表，供 ffmpeg 抽帧。
+    result["keyframes"] = _normalize_keyframes(parsed.get("keyframes"))
+
     try:
         if parsed.get("shot_count"):
             result["shot_count"] = int(parsed["shot_count"])
@@ -665,3 +829,18 @@ def analyze_reference_video(video_abs_path, prompt=None, timeout=600):
     if isinstance(sv, list):
         result["suggested_variables"] = sv
     return result
+
+
+def _normalize_keyframes(raw):
+    """把 AI 返回的关键帧时间点规整成升序去重的浮点秒列表；非法值忽略。"""
+    if not isinstance(raw, list):
+        return []
+    seen = []
+    for x in raw:
+        try:
+            t = round(float(x), 2)
+        except (TypeError, ValueError):
+            continue
+        if t >= 0 and t not in seen:
+            seen.append(t)
+    return sorted(seen)

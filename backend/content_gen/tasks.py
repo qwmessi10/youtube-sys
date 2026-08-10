@@ -170,10 +170,8 @@ def _finalize_flow1_item(item, run, log, errors, record):
         return
 
     # 变量注入：把 AI 文案里的 {promo_code} 等占位符替换成本条视频的真实变量值。
-    # 变量来源：本条 item 的 variables（每视频一组），兜底用 run.promo_code。
+    # 变量来源：本条 item 的 variables（每视频一组，promo_code 等都在这里，不再特殊处理）。
     variables = dict(item.variables or {})
-    if "promo_code" not in variables and (run.promo_code or "").strip():
-        variables["promo_code"] = run.promo_code.strip()
 
     def _fill(text):
         """用变量替换文本中的 {key} 占位符；缺失的占位符原样保留，不报错。"""
@@ -240,6 +238,8 @@ def _finalize_flow1_item(item, run, log, errors, record):
         # 模板信息：composition_id 决定用哪个 Remotion 组件；素材路径转绝对路径。
         template = run.template
         composition_id = (template.composition_id or "").strip() if template else ""
+        # 视频总时长 = 各分镜时长之和（素材播完会冻结在最后一帧，画面继续到这个时长）。
+        total_duration = sum((s.get("duration") or 0) for s in shots)
         assets_abs = []
         if template:
             for a in (template.assets or []):
@@ -247,7 +247,17 @@ def _finalize_flow1_item(item, run, log, errors, record):
                     assets_abs.append({
                         "key": a.get("key"),
                         "file": os.path.join(settings.MEDIA_ROOT, a["file"]),
+                        # 素材真实时长（后端 ffprobe 探测所得），透传给模板算「播完冻结点」，
+                        # 避免模板在 render 容器里用浏览器重新读时长（容器读不到会失效）。
+                        "duration": a.get("duration"),
                     })
+                    # 校验：模板总时长必须大于素材时长，否则素材没播完就被截断。
+                    adur = a.get("duration")
+                    if adur and total_duration and total_duration < adur:
+                        raise RuntimeError(
+                            f"模板总时长（{total_duration}秒）小于素材「{a.get('name') or a.get('key')}」"
+                            f"时长（{adur}秒），素材会被截断。请把模板时长调到大于素材时长后重试。"
+                        )
         render_result = render_video(
             title=item.title, keyword=item.keyword, promo_code=promo_code,
             cover_abs_path=cover_abs, shots=shots, narration_audio=audio_abs,

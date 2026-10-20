@@ -22,7 +22,7 @@ const selectedIds = ref([]);
 const creating = ref(false);
 const form = ref({
   name: "", keyword: "", total_duration: 240, promo_code: "",
-  country: "IN", event_name: "", language: "en-IN",
+  country: "IN", event_name: "", language: "en-IN", hook_material: null,
 });
 let pollTimer = null;
 
@@ -33,7 +33,10 @@ const agentLoading = ref(false);
 // —— 素材库 ——
 const screenMaterials = ref([]);
 const bgmMaterials = ref([]);
+const hookMaterials = ref([]);
+const selectedHookIds = ref([]);
 const materialLoading = ref(false);
+const tagLabel = (t) => (t === "used" ? "已使用" : "未使用");
 
 // —— 详情 / Hook 上传 / 日志 ——
 const detailDialog = ref(false);
@@ -71,7 +74,8 @@ async function loadRuns(page = runPage.value) {
 
 function openCreate() {
   form.value = { name: "", keyword: "", total_duration: 240, promo_code: "",
-    country: "IN", event_name: "", language: "en-IN" };
+    country: "IN", event_name: "", language: "en-IN", hook_material: null };
+  loadHookOptions();  // 加载 hook 素材供下拉选择
   taskMode.value = "create";
 }
 
@@ -80,7 +84,12 @@ async function createRun() {
   creating.value = true;
   try {
     await axios.post("/api/flow3-runs/", form.value);
-    ElMessage.success("任务已创建，正在生成 Hook Prompt…");
+    const tip = form.value.hook_material
+      ? "任务已创建，使用所选 Hook 素材直接出片…"
+      : (hookMaterials.value.some((h) => h.tag === "unused")
+          ? "任务已创建，将随机取用未使用的 Hook 素材直接出片…"
+          : "任务已创建，正在生成 Hook Prompt，稍后需上传 Hook 视频…");
+    ElMessage.success(tip);
     taskMode.value = "list";
     await loadRuns(1);
   } catch (e) {
@@ -218,18 +227,21 @@ async function resetAgent(agent) {
 async function loadMaterials() {
   materialLoading.value = true;
   try {
-    const [s, b] = await Promise.all([
+    const [s, b, h] = await Promise.all([
       axios.get("/api/flow3-materials/", { params: { type: "screen_record", page_size: 100 } }),
       axios.get("/api/flow3-materials/", { params: { type: "bgm", page_size: 100 } }),
+      axios.get("/api/flow3-materials/", { params: { type: "hook", page_size: 200 } }),
     ]);
     screenMaterials.value = s.data.results || s.data;
     bgmMaterials.value = b.data.results || b.data;
+    hookMaterials.value = h.data.results || h.data;
   } catch {
     ElMessage.error("加载素材失败");
   } finally {
     materialLoading.value = false;
   }
 }
+// 单个上传（录屏/BGM 沿用）
 async function uploadMaterial(type, uploadFile) {
   const fd = new FormData();
   fd.append("material_type", type);
@@ -243,6 +255,43 @@ async function uploadMaterial(type, uploadFile) {
     ElMessage.error(e.response?.data ? JSON.stringify(e.response.data) : "上传失败");
   }
 }
+// Hook 批量上传（多个 mp4）
+async function batchUploadHook(uploadFile) {
+  const fd = new FormData();
+  fd.append("material_type", "hook");
+  fd.append("files", uploadFile.raw);
+  try {
+    await axios.post("/api/flow3-materials/batch_upload/", fd);
+    ElMessage.success(`已上传 ${uploadFile.name}`);
+    await loadMaterials();
+  } catch (e) {
+    ElMessage.error(e.response?.data ? JSON.stringify(e.response.data) : "上传失败");
+  }
+}
+function onHookSelectionChange(rows) {
+  selectedHookIds.value = rows.map((r) => r.id);
+}
+async function bulkDeleteHook() {
+  if (!selectedHookIds.value.length) return ElMessage.warning("请先勾选要删除的 Hook 素材");
+  try {
+    await ElMessageBox.confirm(`确定删除选中的 ${selectedHookIds.value.length} 个 Hook 素材？`, "确认删除", { type: "warning" });
+    await axios.post("/api/flow3-materials/bulk_delete/", { ids: selectedHookIds.value });
+    ElMessage.success("已删除");
+    selectedHookIds.value = [];
+    await loadMaterials();
+  } catch (e) {
+    if (e !== "cancel") ElMessage.error(e.response?.data?.detail || "删除失败");
+  }
+}
+async function updateHookTag(m, tag) {
+  try {
+    await axios.patch(`/api/flow3-materials/${m.id}/`, { tag });
+    ElMessage.success("标签已更新");
+    await loadMaterials();
+  } catch {
+    ElMessage.error("更新标签失败");
+  }
+}
 async function deleteMaterial(m) {
   try {
     await ElMessageBox.confirm(`确定删除素材「${m.name || m.id}」？`, "确认", { type: "warning" });
@@ -252,6 +301,13 @@ async function deleteMaterial(m) {
   } catch (e) {
     if (e !== "cancel") ElMessage.error("删除失败");
   }
+}
+// 任务创建时加载 hook 素材供下拉选择
+async function loadHookOptions() {
+  try {
+    const { data } = await axios.get("/api/flow3-materials/", { params: { type: "hook", page_size: 200 } });
+    hookMaterials.value = data.results || data;
+  } catch { /* 忽略 */ }
 }
 
 // 首次 + 切换 view 时按需加载
@@ -316,7 +372,7 @@ onUnmounted(() => stopPoll());
       </el-page-header>
       <el-alert
         title="三段式长视频（16:9 1080P）"
-        description="创建后系统先生成 Hook Prompt，任务暂停等你上传 Hook 视频（mp4），上传后点「继续」自动完成旁白/TTS/模糊底图/尾图/组装/混音去重。"
+        description="选用/随机到 Hook 素材库的素材时，任务直接出片。若库中无可用素材，则生成 Hook Prompt 并暂停等待人工上传 Hook 视频，上传后点「继续」自动完成后续。"
         type="info" :closable="false" show-icon class="flow3-intro" />
       <el-card shadow="never" class="create-card">
         <el-form label-width="96px" style="max-width: 680px">
@@ -327,6 +383,18 @@ onUnmounted(() => stopPoll());
           <el-form-item label="国家"><el-input v-model="form.country" style="width: 160px" /></el-form-item>
           <el-form-item label="赛事"><el-input v-model="form.event_name" placeholder="选填，如 IPL 2026" /></el-form-item>
           <el-form-item label="语言"><el-input v-model="form.language" style="width: 160px" placeholder="en-IN" /></el-form-item>
+          <el-form-item label="Hook 素材">
+            <el-select v-model="form.hook_material" clearable filterable placeholder="不选=随机取未使用素材" style="width: 360px">
+              <el-option v-for="h in hookMaterials" :key="h.id"
+                :label="`${h.name || ('素材#'+h.id)}（${h.tag_label || (h.tag === 'used' ? '已使用' : '未使用')}）`"
+                :value="h.id" />
+            </el-select>
+            <div class="form-hint">
+              从 Hook 素材库按文件名选择；不选则随机取一个「未使用」素材。
+              <strong>选中或随机到素材后，任务直接出片，无需再上传 Hook 视频</strong>；
+              库中没有可用素材时才会生成 Hook Prompt 并等待人工上传。
+            </div>
+          </el-form-item>
           <el-form-item>
             <el-button type="primary" :loading="creating" @click="createRun">创建任务</el-button>
             <el-button @click="taskMode = 'list'">取消</el-button>
@@ -365,8 +433,33 @@ onUnmounted(() => stopPoll());
 
   <!-- ============ 素材库 ============ -->
   <div v-else-if="view === 'flow3-materials'">
-    <el-alert title="流程3 素材库" description="9:16 录屏：库内保留 1 个，所有任务自动取用（取最新启用的一个）。BGM：可批量上传多个，任务执行时随机抽 1 个。" type="success" :closable="false" show-icon class="flow3-intro" />
+    <el-alert title="流程3 素材库" description="Hook 视频：可批量上传 mp4，带「未使用/已使用」标签；创建任务时可指定或随机取未使用素材。9:16 录屏：库内保留 1 个，所有任务自动取用。BGM：可批量上传，任务执行时随机抽 1 个。" type="success" :closable="false" show-icon class="flow3-intro" />
     <div v-loading="materialLoading">
+      <!-- Hook 视频库 -->
+      <el-card shadow="never" class="table-card">
+        <template #header><div class="card-title"><strong>Hook 视频</strong>
+          <div class="toolbar-left">
+            <el-button type="danger" plain size="small" :disabled="!selectedHookIds.length" @click="bulkDeleteHook">删除{{ selectedHookIds.length ? `(${selectedHookIds.length})` : '' }}</el-button>
+            <el-upload :auto-upload="true" :show-file-list="false" accept="video/*" :multiple="true" :http-request="({ file }) => batchUploadHook({ raw: file, name: file.name })">
+              <el-button type="primary" size="small">批量上传 Hook</el-button>
+            </el-upload>
+          </div>
+        </div></template>
+        <el-table :data="hookMaterials" size="small" empty-text="暂无 Hook 素材" @selection-change="onHookSelectionChange">
+          <el-table-column type="selection" width="44" />
+          <el-table-column prop="name" label="名称" min-width="200" />
+          <el-table-column label="时长" width="90"><template #default="{ row }">{{ row.duration ? row.duration + 's' : '—' }}</template></el-table-column>
+          <el-table-column label="标签" width="140"><template #default="{ row }">
+            <el-select :model-value="row.tag" size="small" style="width: 100px" @change="(v) => updateHookTag(row, v)">
+              <el-option label="未使用" value="unused" />
+              <el-option label="已使用" value="used" />
+            </el-select>
+          </template></el-table-column>
+          <el-table-column label="预览" width="80"><template #default="{ row }"><a v-if="row.file_url" :href="row.file_url" target="_blank">查看</a></template></el-table-column>
+          <el-table-column label="操作" width="90"><template #default="{ row }"><el-button size="small" type="danger" plain @click="deleteMaterial(row)">删除</el-button></template></el-table-column>
+        </el-table>
+      </el-card>
+
       <el-card shadow="never" class="table-card">
         <template #header><div class="card-title"><strong>9:16 手机录屏</strong>
           <el-upload :auto-upload="true" :show-file-list="false" accept="video/*" :http-request="({ file }) => uploadMaterial('screen_record', { raw: file, name: file.name })">
@@ -481,4 +574,5 @@ onUnmounted(() => stopPoll());
 .log-collapse { margin-top: 8px; }
 .log-err { color: #f56c6c; font-size: 13px; margin-top: 4px; }
 .hint { color: #8a949c; font-size: 13px; margin-bottom: 10px; }
+.form-hint { color: #8a949c; font-size: 12px; line-height: 1.5; margin-top: 4px; }
 </style>

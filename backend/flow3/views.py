@@ -77,6 +77,43 @@ class Flow3MaterialViewSet(viewsets.ModelViewSet):
             obj.duration = round(dur, 2)
             obj.save(update_fields=["duration", "updated_at"])
 
+    @action(detail=False, methods=["post"], parser_classes=[MultiPartParser, FormParser])
+    def batch_upload(self, request):
+        """批量上传素材（主要用于 Hook 视频）。参数：material_type + files（多文件）。新素材默认标签「未使用」。"""
+        mtype = (request.data.get("material_type") or "").strip()
+        if mtype not in dict(Flow3Material.TYPE_CHOICES):
+            return Response({"detail": "material_type 无效。"}, status=status.HTTP_400_BAD_REQUEST)
+        files = request.FILES.getlist("files") or request.FILES.getlist("file")
+        if not files:
+            return Response({"detail": "请选择要上传的文件。"}, status=status.HTTP_400_BAD_REQUEST)
+        created = []
+        for f in files:
+            obj = Flow3Material.objects.create(
+                material_type=mtype, name=f.name, file=f,
+                tag=Flow3Material.TAG_UNUSED, enabled=True,
+            )
+            self._fill_duration(obj)
+            created.append(obj)
+        data = Flow3MaterialSerializer(created, many=True, context={"request": request}).data
+        return Response({"detail": f"已上传 {len(created)} 个素材。", "items": data}, status=status.HTTP_201_CREATED)
+
+    @action(detail=False, methods=["post"])
+    def bulk_delete(self, request):
+        """批量删除素材。参数：ids=[1,2,3]。一并删除磁盘文件。"""
+        ids = request.data.get("ids") or []
+        if not isinstance(ids, list) or not ids:
+            return Response({"detail": "请提供要删除的素材 id 列表。"}, status=status.HTTP_400_BAD_REQUEST)
+        qs = Flow3Material.objects.filter(id__in=ids)
+        count = qs.count()
+        for m in qs:
+            try:
+                if m.file:
+                    m.file.delete(save=False)
+            except Exception:
+                pass
+        qs.delete()
+        return Response({"detail": f"已删除 {count} 个素材。", "deleted": count})
+
 
 class Flow3RunViewSet(mixins.ListModelMixin, mixins.CreateModelMixin,
                       mixins.RetrieveModelMixin, mixins.DestroyModelMixin,

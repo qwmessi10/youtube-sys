@@ -15,12 +15,13 @@ class Flow3AgentSerializer(serializers.ModelSerializer):
 
 class Flow3MaterialSerializer(serializers.ModelSerializer):
     material_type_label = serializers.CharField(source="get_material_type_display", read_only=True)
+    tag_label = serializers.CharField(source="get_tag_display", read_only=True)
     file_url = serializers.SerializerMethodField()
 
     class Meta:
         model = Flow3Material
         fields = ["id", "material_type", "material_type_label", "name", "file", "file_url",
-                  "duration", "enabled", "created_at", "updated_at"]
+                  "duration", "tag", "tag_label", "enabled", "created_at", "updated_at"]
         read_only_fields = ["duration"]
 
     def get_file_url(self, obj):
@@ -67,12 +68,17 @@ class Flow3RunSerializer(serializers.ModelSerializer):
 
 
 class Flow3RunCreateSerializer(serializers.ModelSerializer):
-    """创建流程3 任务：单关键词、总时长、促销码等。"""
+    """创建流程3 任务：单关键词、总时长、促销码等。可选从 hook 素材库指定素材。"""
+    # 指定 hook 素材（可空）。不传=随机取未使用素材；传了=用指定素材并跳过人工上传。
+    hook_material = serializers.PrimaryKeyRelatedField(
+        queryset=Flow3Material.objects.filter(material_type=Flow3Material.TYPE_HOOK),
+        required=False, allow_null=True,
+    )
 
     class Meta:
         model = Flow3Run
         fields = ["id", "name", "keyword", "total_duration", "promo_code",
-                  "country", "event_name", "language"]
+                  "country", "event_name", "language", "hook_material"]
 
     def validate_keyword(self, value):
         value = (value or "").strip()

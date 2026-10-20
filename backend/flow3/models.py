@@ -45,21 +45,34 @@ class Flow3Agent(models.Model):
 class Flow3Material(models.Model):
     """
     流程3 专属素材库（与 content_gen 的模板 assets 完全不同、隔离）。
-    两类：
+    三类：
       - screen_record：SegB 右侧 9:16 手机录屏，库内固定维护 1 个，所有任务自动取用。
       - bgm：背景音乐，可批量上传多个，任务执行时随机抽 1 个（种子记录到任务）。
+      - hook：SegA 开场 Hook 视频，可批量上传。任务创建时可指定或随机取「未使用」的；
+        用过标记为「已使用」，已使用的不再参与随机，除非用户显式选中。
     """
     TYPE_SCREEN = "screen_record"
     TYPE_BGM = "bgm"
+    TYPE_HOOK = "hook"
     TYPE_CHOICES = [
         (TYPE_SCREEN, "9:16 手机录屏"),
         (TYPE_BGM, "背景音乐 BGM"),
+        (TYPE_HOOK, "Hook 视频"),
+    ]
+
+    # 素材标签（主要用于 hook 素材的使用状态流转）。
+    TAG_UNUSED = "unused"
+    TAG_USED = "used"
+    TAG_CHOICES = [
+        (TAG_UNUSED, "未使用"),
+        (TAG_USED, "已使用"),
     ]
 
     material_type = models.CharField(max_length=16, choices=TYPE_CHOICES)
     name = models.CharField(max_length=200, blank=True)        # 展示名，留空取文件名
     file = models.FileField(upload_to="flow3/materials/")
     duration = models.FloatField(null=True, blank=True)        # 视频/音频时长（秒），ffprobe 探测
+    tag = models.CharField(max_length=16, choices=TAG_CHOICES, default=TAG_UNUSED)  # 使用状态标签
     enabled = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -105,7 +118,11 @@ class Flow3Run(models.Model):
 
     # —— 过程产出 ——
     hook_prompt = models.TextField(blank=True)                 # Step2 Hook Agent 产出的视频 prompt
-    hook_video = models.FileField(upload_to="flow3/hook/", blank=True, null=True)  # 人工上传的 Hook mp4
+    hook_video = models.FileField(upload_to="flow3/hook/", blank=True, null=True)  # Hook mp4（人工上传 或 从库复制）
+    # 从 hook 素材库选用/随机到的素材（可空）。有值则跳过「出 prompt + 等待上传」直接出片。
+    hook_material = models.ForeignKey(
+        "Flow3Material", on_delete=models.SET_NULL, null=True, blank=True, related_name="used_by_runs"
+    )
     narration = models.JSONField(default=dict, blank=True)     # 旁白脚本 {shots:[{index,duration,narration}]}
     narration_audio = models.JSONField(default=list, blank=True)  # TTS 产出 [{index,file,provider}]
     blur_bg_file = models.FileField(upload_to="flow3/blur_bg/", blank=True, null=True)   # SegB 高斯模糊底图

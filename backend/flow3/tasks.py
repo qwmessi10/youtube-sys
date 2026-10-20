@@ -63,9 +63,34 @@ def _log_step(run, step, status, detail=None, error="", elapsed=None):
     run.save(update_fields=["run_log", "updated_at"])
 
 
+def _resolve_hook_material(run):
+    """
+    解析本任务要用的 Hook 素材：
+      - 用户在创建时已指定 run.hook_material → 用它（允许复用已使用的）。
+      - 否则从 hook 库随机取一个「未使用 + 启用」的素材。
+      - 都没有 → 返回 None（走原「出 prompt + 等待人工上传」流程）。
+    """
+    if run.hook_material_id:
+        return run.hook_material
+    candidates = list(Flow3Material.objects.filter(
+        material_type=Flow3Material.TYPE_HOOK,
+        tag=Flow3Material.TAG_UNUSED,
+        enabled=True,
+    ))
+    if not candidates:
+        return None
+    import random as _r
+    return _r.Random(run.layout_seed).choice(candidates)
+
+
 @shared_task(bind=True, soft_time_limit=600, time_limit=900)
 def process_flow3_run(self, run_id, task_token):
-    """Step1~3：校验 → Hook Agent 出 prompt → 进入 awaiting_hook 暂停等上传。"""
+    """
+    Step1~3：校验 → 解析 Hook 素材。
+      - 若选用/随机到 hook 库素材：直接用其文件作为 Hook 视频，标记素材「已使用」，
+        跳过「出 prompt + 等待上传」，直接进入 Step4~7 出片。
+      - 否则：Hook Agent 出 prompt → 进入 awaiting_hook 暂停等人工上传。
+    """
     run = Flow3Run.objects.get(pk=run_id)
     if not _can_continue(run_id, task_token):
         return
@@ -74,7 +99,25 @@ def process_flow3_run(self, run_id, task_token):
     run.status = Flow3Run.STATUS_RUNNING
     run.save(update_fields=["error_message", "run_log", "status", "updated_at"])
 
-    # Step2：Hook 文案 Agent 出视频 prompt。
+    # Step2a：优先走「从 hook 素材库取素材」路径。
+    material = _resolve_hook_material(run)
+    if material:
+        # 直接引用素材文件作为 Hook 视频（不复制，省空间）；标记素材为已使用。
+        run.hook_material = material
+        run.hook_video.name = material.file.name
+        run.save(update_fields=["hook_material", "hook_video", "updated_at"])
+        if material.tag != Flow3Material.TAG_USED:
+            material.tag = Flow3Material.TAG_USED
+            material.save(update_fields=["tag", "updated_at"])
+        _log_step(run, "hook_material", "success", detail={
+            "message": "已从 Hook 素材库选用素材，跳过人工上传。",
+            "material_id": material.id, "material_name": material.name or material.file.name,
+        })
+        # 直接进入 Step4~7（复用 continue 的组装逻辑）。
+        continue_flow3_run.delay(run_id, task_token)
+        return
+
+    # Step2b：素材库无可用 hook → 走原 Hook Agent 出 prompt 流程。
     _log_step(run, "hook_prompt", "running")
     started = time.monotonic()
     try:

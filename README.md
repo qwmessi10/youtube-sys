@@ -1,8 +1,14 @@
 # YouTube 内容生成与自动化后台
 
-当前已实现第一期“关键词系统”：输入基础关键词后，系统通过 YouTube Suggest 发现长尾词，依次调用 SerpApi 与 YouTube Data API V3 获取前 5 条视频的标题、链接、播放量、点赞、评论、发布时间与频道订阅数据，按既定规则评分，并在后台查看和导出完整 CSV。
+面向 YouTube 博彩/体育推广场景的内容自动化后台，目前包含两大系统：
 
-本期不包含 AI Agent 调用、内容生成、视频上传发布或 AdsPower 自动化；这些模块与关键词系统保持隔离。
+1. **关键词系统**：输入基础关键词后，通过 YouTube Suggest 发现长尾词，依次调用 SerpApi 与 YouTube Data API V3 获取视频的标题、链接、播放量、点赞、评论、发布时间与频道订阅数据，按规则（或 AI 博彩意图筛选）评分，后台查看并导出 CSV。
+2. **内容生成系统**：基于关键词批量生成 YouTube 视频（标题/描述/封面/旁白/成品），含三条相互隔离的流程：
+   - **流程一（全自动）**：关键词 + 视频模板 + 变量 → AI 元数据/封面/旁白 → Edge TTS → Remotion 渲染出片。
+   - **流程二（半自动）**：AI 出元数据 + 分镜脚本 → 人工上传分镜视频 → ffmpeg 合并。
+   - **流程三（全新三段式长视频）**：独立 `flow3` 模块，产出 16:9 1080P、最长 4 分钟的长视频——SegA Hook（AI 出 Prompt + 人工上传 mp4）+ SegB 左右分屏画中画（Remotion）+ SegC 尾图呼吸微动（ffmpeg zoompan），叠加 BGM 混音与防封去重。详见下文「流程三」。
+
+> 流程三与流程一/二**完全代码隔离**（独立 Django app `flow3`、独立前端页、独立 Agent 与素材库），后续可整块移除流程一/二而不影响流程三。
 
 ## 技术栈
 
@@ -10,6 +16,8 @@
 - 异步任务：Celery、Redis
 - 数据库：PostgreSQL 16
 - 前端：Vue 3、Vite、Element Plus
+- 视频渲染：Remotion（Node 22 + 无头 Chromium）、ffmpeg
+- AI：moretokens（OpenAI 兼容中转）文本/生图模型、Edge TTS 语音合成
 - 部署：Docker Compose、Nginx
 
 ## 本地开发
@@ -93,13 +101,55 @@ YouTube V3 使用 `videos.list` 和 `channels.list` 批量补齐视频、频道�
 - **停止**：立即禁止后续关键词处理，已完成结果保留。
 - **重启**：从暂停、停止或失败状态继续处理未完成的关键词，不会重复查询已完成或已记录错误的关键词。
 
+## 流程三：全新三段式长视频
+
+流程三是独立模块（后端 `backend/flow3`、前端菜单「内容生成 · 流程3」），单任务产出一个 16:9 1080P 长视频。
+
+### 成片结构
+| 段 | 时间 | 画面 | 生成方式 |
+|---|---|---|---|
+| SegA | 0–7s | Hook 开场 | AI 出视频 Prompt → 人工用外部文生视频引擎生成 mp4 → 回传上传 |
+| SegB | 7s–旁白结束 | 左右分屏画中画：模糊底图 + Promo Code 文字 + 9:16 录屏 | Remotion 渲染，录屏左右位置按随机种子 |
+| SegC | 至总时长 | 尾图 + 呼吸/抖动微动 | AI 生图 → ffmpeg zoompan |
+
+总时长在创建任务时填写；SegC 时长 = 总时长 − 7 − 旁白实际时长。合成后叠加 BGM 混音与像素级防封去重。
+
+### 五个独立 Agent（「流程3 → Agent 管理」可配置提示词）
+- Hook 视频文案 Agent、语音文案 Agent（印度英语旁白）、模糊底图 Agent、尾图 Agent、元数据 Agent
+- 支持 `{PROMO_CODE}` / `{COUNTRY}` / `{EVENT_NAME}` 占位符注入
+
+### 素材库（「流程3 → 素材库」）
+- **9:16 手机录屏**：库内保留 1 个，所有任务自动取用
+- **背景音乐 BGM**：可批量上传，任务执行时随机抽取 1 个（种子记录便于复现）
+
+### 使用流程
+1. 创建任务（填关键词、总时长、优惠码等）→ 系统生成 Hook Prompt，任务暂停等待上传。
+2. 用 Hook Prompt 在外部引擎生成 mp4，在任务列表「上传 Hook」后点「继续」。
+3. 系统自动完成：旁白 → 印式 TTS → 模糊底图 → 尾图 → 元数据 → SegB → SegC → 三段合并 → BGM 混音 + 防封。
+4. 完成后「下载」得到 zip（含 `metadata.txt` + 封面 `cover.jpg` + 成品 `final_video.mp4`）。
+
+> AI Key 与模型在「全局设置」维护（文本模型 `AI_MODEL`、生图模型 `GEMINI_IMAGE_MODEL`、`AI_API_KEY` 等），不写死在代码。AI 调用对偶发断连做自动重试；各生成步骤幂等，重启/续跑不会重复消耗额度。
+
 ## 当前接口
 
+关键词系统：
 - `POST /api/keyword-runs/`：创建关键词任务
 - `GET /api/keyword-runs/`：查询任务
 - `GET /api/keyword-results/?run=<id>`：查询关键词结果
 - `GET /api/keyword-results/export/?run=<id>`：导出 CSV
 - `GET/PUT /api/settings/`：读取和修改全局 API、AI 配置
+
+内容生成（流程一/二）：
+- `/api/content-runs/`、`/api/content-items/`、`/api/content-agents/`、`/api/video-templates/`
+
+流程三（独立）：
+- `POST /api/flow3-runs/`：创建任务（出 Hook Prompt 后暂停）
+- `POST /api/flow3-runs/<id>/upload_hook/`：上传 Hook 视频
+- `POST /api/flow3-runs/<id>/resume/`：继续执行 Step4~7
+- `POST /api/flow3-runs/<id>/{pause,stop,restart}/`：任务控制
+- `GET /api/flow3-runs/<id>/log/`：工作日志
+- `GET /api/flow3-runs/<id>/package/`：下载成品 zip
+- `/api/flow3-agents/`、`/api/flow3-materials/`：Agent 管理与素材库
 
 ## Git
 

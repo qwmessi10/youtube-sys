@@ -16,7 +16,6 @@ INSTALLED_APPS = [
     "corsheaders",
     "rest_framework",
     "keywords",
-    "content_gen",
     "flow3",
 ]
 MIDDLEWARE = [

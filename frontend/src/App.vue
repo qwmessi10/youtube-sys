@@ -1,16 +1,11 @@
 <script setup>
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import axios from "axios";
-import { ElMessage } from "element-plus";
-import ContentTasks from "./components/ContentTasks.vue";
-import ContentAgents from "./components/ContentAgents.vue";
-import VideoTemplates from "./components/VideoTemplates.vue";
+import { ElMessage, ElMessageBox } from "element-plus";
 import Flow3System from "./components/Flow3System.vue";
 
 // 当前菜单从 localStorage 恢复，刷新后停留在原页面而不是跳回默认。
 const activeMenu = ref(localStorage.getItem("activeMenu") || "tasks");
-// 从关键词结果页「送入内容生成」带过来的关键词，传给内容任务组件预填。
-const injectedKeywords = ref([]);
 const loading = ref(false);
 const settings = ref([]);
 const runs = ref([]);
@@ -25,6 +20,9 @@ const resultPage = ref(1);
 const runTotal = ref(0);
 const resultTotal = ref(0);
 const form = ref({ root_keyword: "", country: "US", language: "en", max_keywords: 15, scoring_model: "2.0" });
+// 任务管理子模式：list=任务列表，create=新增任务界面（与内容生成系统一致的架构）
+const taskMode = ref("list");
+const selectedRunIds = ref([]);
 const logDrawer = ref(false);
 const logLoading = ref(false);
 const logData = ref(null);
@@ -43,16 +41,10 @@ let sePollTimer = null;            // 运行中任务的进度轮询定时器
 
 const menuTitles = {
   tasks: "任务管理", agents: "关键词 Agent 管理", "suggest-expand": "获取 Suggest API 长尾词",
-  "content-tasks": "内容生成 - 任务管理", "content-agents": "内容生成 Agent 管理", "video-templates": "内容生成 - 视频模板",
-  "flow3": "内容生成系统 · 流程3", settings: "全局设置",
+  "flow3-tasks": "内容生成 - 任务管理", "flow3-agents": "内容生成 - Agent 管理", "flow3-materials": "内容生成 - 素材库",
+  settings: "全局设置",
 };
 const menuTitle = computed(() => menuTitles[activeMenu.value] || "关键词系统");
-
-// 把选中的关键词送入内容生成：填充关键词并切到内容任务页。
-function sendToContent(item) {
-  injectedKeywords.value = [item.keyword];
-  activeMenu.value = "content-tasks";
-}
 
 // Suggest 拓展任务状态 → 文案 + 标签色
 const seStatusMeta = {
@@ -139,11 +131,47 @@ async function createRun() {
     await axios.post("/api/keyword-runs/", form.value);
     ElMessage.success("任务已进入处理队列");
     form.value.root_keyword = "";
+    taskMode.value = "list";
     await loadRuns(1);
   } catch (error) {
     ElMessage.error(error.response?.data ? "创建任务失败，请检查输入" : "无法连接后端");
   } finally {
     loading.value = false;
+  }
+}
+
+function openCreateRun() {
+  form.value = { root_keyword: "", country: "US", language: "en", max_keywords: 15, scoring_model: "2.0" };
+  taskMode.value = "create";
+}
+
+function onRunSelectionChange(rows) {
+  selectedRunIds.value = rows.map((r) => r.id);
+}
+
+async function bulkDeleteRuns() {
+  if (!selectedRunIds.value.length) return ElMessage.warning("请先勾选要删除的任务");
+  try {
+    await ElMessageBox.confirm(`确定删除选中的 ${selectedRunIds.value.length} 个任务？结果数据将一并删除，不可恢复。`, "确认删除", { type: "warning" });
+    await axios.post("/api/keyword-runs/bulk_delete/", { ids: selectedRunIds.value });
+    ElMessage.success("已删除");
+    selectedRunIds.value = [];
+    if (selectedRun.value && !runs.value.some((r) => r.id === selectedRun.value)) clearRunFilter();
+    await loadRuns();
+  } catch (e) {
+    if (e !== "cancel") ElMessage.error(e.response?.data?.detail || "删除失败");
+  }
+}
+
+async function deleteRun(run) {
+  try {
+    await ElMessageBox.confirm(`确定删除任务「${run.root_keyword}」？结果数据将一并删除。`, "确认删除", { type: "warning" });
+    await axios.delete(`/api/keyword-runs/${run.id}/`);
+    ElMessage.success("已删除");
+    if (selectedRun.value === run.id) clearRunFilter();
+    await loadRuns();
+  } catch (e) {
+    if (e !== "cancel") ElMessage.error("删除失败");
   }
 }
 
@@ -351,12 +379,10 @@ watch(activeMenu, (menu) => {
         </el-sub-menu>
         <el-sub-menu index="content">
           <template #title>内容生成系统</template>
-          <el-menu-item index="content-tasks">任务管理</el-menu-item>
-          <el-menu-item index="video-templates">视频模板</el-menu-item>
-          <el-menu-item index="content-agents">内容生成 Agent 管理</el-menu-item>
+          <el-menu-item index="flow3-tasks">任务管理</el-menu-item>
+          <el-menu-item index="flow3-agents">Agent 管理</el-menu-item>
+          <el-menu-item index="flow3-materials">素材库</el-menu-item>
         </el-sub-menu>
-        <!-- 流程3：全新内容生成系统（独立菜单，与流程1/2 隔离，便于后续整块删除流程1/2） -->
-        <el-menu-item index="flow3">内容生成 · 流程3</el-menu-item>
         <el-sub-menu index="tools">
           <template #title>实用工具</template>
           <el-menu-item index="suggest-expand">获取 Suggest API 长尾词</el-menu-item>
@@ -369,34 +395,56 @@ watch(activeMenu, (menu) => {
     <el-container>
       <el-header class="header"><strong>{{ menuTitle }}</strong><span>第一期：关键词发现与规则评分</span></el-header>
       <el-main>
-        <template v-if="activeMenu === 'tasks'">
+        <template v-if="activeMenu === 'tasks' && taskMode === 'create'">
+          <el-page-header class="create-header" content="新增关键词任务" @back="taskMode = 'list'">
+            <template #title>返回列表</template>
+          </el-page-header>
           <el-card class="create-card" shadow="never">
-            <template #header><strong>创建关键词任务</strong></template>
-            <el-form :inline="true" @submit.prevent="createRun">
-              <el-form-item label="基础关键词"><el-input v-model="form.root_keyword" placeholder="例如：youtube automation" /></el-form-item>
+            <el-form label-width="110px" style="max-width: 680px">
+              <el-form-item label="基础关键词" required><el-input v-model="form.root_keyword" placeholder="例如：youtube automation" /></el-form-item>
               <el-form-item label="目标国家"><el-select v-model="form.country" filterable><el-option v-for="item in options.countries" :key="item.value" :label="`${item.label} (${item.value})`" :value="item.value" /></el-select></el-form-item>
               <el-form-item label="结果语言"><el-select v-model="form.language" filterable><el-option v-for="item in options.languages" :key="item.value" :label="`${item.label} (${item.value})`" :value="item.value" /></el-select></el-form-item>
               <el-form-item label="最大长尾数"><el-input-number v-model="form.max_keywords" :min="1" :max="100" /></el-form-item>
-              <el-form-item label="打分模型"><el-select v-model="form.scoring_model" style="width: 260px"><el-option label="2.0（AI BC意图筛选 + 全量打分）" value="2.0" /><el-option label="1.0（前 5 视频规则打分）" value="1.0" /></el-select></el-form-item>
-              <el-button type="primary" :loading="loading" @click="createRun">开始分析</el-button>
+              <el-form-item label="打分模型"><el-select v-model="form.scoring_model" style="width: 320px"><el-option label="2.0（AI BC意图筛选 + 全量打分）" value="2.0" /><el-option label="1.0（前 5 视频规则打分）" value="1.0" /></el-select></el-form-item>
+              <el-form-item>
+                <el-button type="primary" :loading="loading" @click="createRun">开始分析</el-button>
+                <el-button @click="taskMode = 'list'">取消</el-button>
+              </el-form-item>
             </el-form>
+          </el-card>
+        </template>
+        <template v-else-if="activeMenu === 'tasks'">
+          <el-card shadow="never" class="toolbar-card">
+            <div class="toolbar">
+              <div class="toolbar-left">
+                <el-button type="primary" @click="openCreateRun">新增任务</el-button>
+                <el-button type="danger" plain :disabled="!selectedRunIds.length" @click="bulkDeleteRuns">删除{{ selectedRunIds.length ? `(${selectedRunIds.length})` : '' }}</el-button>
+              </div>
+              <div class="toolbar-right">
+                <el-input v-model="runSearch" clearable placeholder="按基础关键词搜索" style="width: 220px" @keyup.enter="loadRuns(1)" @clear="loadRuns(1)" />
+                <el-button @click="loadRuns(1)">查询</el-button>
+                <el-button @click="loadRuns()">刷新</el-button>
+              </div>
+            </div>
           </el-card>
 
           <el-card shadow="never" class="table-card">
-            <template #header><div class="card-title"><strong>任务记录</strong><div><el-input v-model="runSearch" clearable placeholder="搜索基础关键词" class="search-input" @keyup.enter="loadRuns(1)" @clear="loadRuns(1)" /><el-button @click="loadRuns(1)">搜索</el-button></div></div></template>
-            <el-table :data="runs" size="small" empty-text="暂无任务" :row-class-name="runRowClass" class="clickable-table" @row-click="(row) => selectRun(row)">
-              <el-table-column prop="root_keyword" label="基础关键词" min-width="180" />
-              <el-table-column prop="country" label="国家" width="80" />
-              <el-table-column prop="language" label="语言" width="90" />
+            <el-table :data="runs" size="small" empty-text="暂无任务，点「新增任务」创建" :row-class-name="runRowClass" @selection-change="onRunSelectionChange">
+              <el-table-column type="selection" width="44" />
+              <el-table-column prop="root_keyword" label="基础关键词" min-width="170" />
+              <el-table-column prop="country" label="国家" width="70" />
+              <el-table-column prop="language" label="语言" width="80" />
               <el-table-column label="模型" width="70"><template #default="{ row }"><el-tag size="small" :type="row.scoring_model === '2.0' ? 'success' : 'info'" effect="plain">{{ row.scoring_model }}</el-tag></template></el-table-column>
-              <el-table-column prop="status" label="状态" width="110" />
-              <el-table-column prop="result_count" label="已处理" width="90" />
-              <el-table-column label="更新时间" min-width="170"><template #default="{ row }">{{ datetime(row.updated_at) }}</template></el-table-column>
-              <el-table-column label="控制" width="280"><template #default="{ row }">
-                <el-button size="small" :disabled="!['pending', 'running'].includes(row.status)" @click.stop="controlRun(row, 'pause')">暂停</el-button>
-                <el-button size="small" type="primary" plain :disabled="!['paused', 'stopped', 'failed'].includes(row.status)" @click.stop="controlRun(row, 'restart')">重启</el-button>
-                <el-button size="small" type="danger" plain :disabled="!['pending', 'running', 'paused'].includes(row.status)" @click.stop="controlRun(row, 'stop')">停止</el-button>
-                <el-button size="small" type="info" plain @click.stop="openLog(row)">日志</el-button>
+              <el-table-column prop="status" label="状态" width="90" />
+              <el-table-column prop="result_count" label="已处理" width="80" />
+              <el-table-column label="更新时间" min-width="160"><template #default="{ row }">{{ datetime(row.updated_at) }}</template></el-table-column>
+              <el-table-column label="操作" width="380" fixed="right"><template #default="{ row }">
+                <el-button size="small" type="primary" plain @click="selectRun(row)">查看结果</el-button>
+                <el-button size="small" :disabled="!['pending', 'running'].includes(row.status)" @click="controlRun(row, 'pause')">暂停</el-button>
+                <el-button size="small" type="primary" plain :disabled="!['paused', 'stopped', 'failed'].includes(row.status)" @click="controlRun(row, 'restart')">重启</el-button>
+                <el-button size="small" type="warning" plain :disabled="!['pending', 'running', 'paused'].includes(row.status)" @click="controlRun(row, 'stop')">停止</el-button>
+                <el-button size="small" type="info" plain @click="openLog(row)">日志</el-button>
+                <el-button size="small" type="danger" plain @click="deleteRun(row)">删除</el-button>
               </template></el-table-column>
             </el-table>
             <el-pagination v-model:current-page="runPage" class="pagination" layout="total, prev, pager, next" :page-size="10" :total="runTotal" @current-change="loadRuns" />
@@ -413,7 +461,6 @@ watch(activeMenu, (menu) => {
               <el-table-column label="状态" width="150"><template #default="{ row }"><el-tag :type="statusType(row.status)" size="small" effect="light">{{ statusLabel(row.status) }}</el-tag></template></el-table-column>
               <el-table-column label="评分过程" min-width="360"><template #default="{ row }"><span v-for="(score, key) in row.score_breakdown" :key="key" class="score">{{ scoreLabels[key] || key }}：{{ score }}</span></template></el-table-column>
               <el-table-column prop="elimination_reason" label="说明" min-width="180" show-overflow-tooltip />
-              <el-table-column label="操作" width="130"><template #default="{ row }"><el-button size="small" type="primary" plain @click="sendToContent(row)">送入内容生成</el-button></template></el-table-column>
             </el-table>
             <el-pagination v-model:current-page="resultPage" class="pagination" layout="total, prev, pager, next" :page-size="10" :total="resultTotal" @current-change="loadResults" />
           </el-card>
@@ -511,10 +558,10 @@ watch(activeMenu, (menu) => {
             <el-empty v-if="!seDetail.keywords || seDetail.keywords.length === 0" description="暂无长尾词" :image-size="60" />
           </el-card>
         </template>
-        <ContentTasks v-else-if="activeMenu === 'content-tasks'" :options="options" :injected-keywords="injectedKeywords" />
-        <VideoTemplates v-else-if="activeMenu === 'video-templates'" />
-        <ContentAgents v-else-if="activeMenu === 'content-agents'" />
-        <Flow3System v-else-if="activeMenu === 'flow3'" />
+        <Flow3System
+          v-else-if="['flow3-tasks', 'flow3-agents', 'flow3-materials'].includes(activeMenu)"
+          :view="activeMenu"
+        />
         <el-card v-else-if="activeMenu === 'settings'" shadow="never">
           <template #header><strong>第三方 API 与 AI 接入配置</strong></template>
           <p class="hint">保存后将优先使用这里的值；AI 配置已预留，第一期不会调用 AI。</p>

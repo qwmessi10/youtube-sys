@@ -1,14 +1,13 @@
 # YouTube 内容生成与自动化后台
 
-面向 YouTube 博彩/体育推广场景的内容自动化后台，目前包含两大系统：
+面向 YouTube 博彩/体育推广场景的内容自动化后台，包含两大系统：
 
 1. **关键词系统**：输入基础关键词后，通过 YouTube Suggest 发现长尾词，依次调用 SerpApi 与 YouTube Data API V3 获取视频的标题、链接、播放量、点赞、评论、发布时间与频道订阅数据，按规则（或 AI 博彩意图筛选）评分，后台查看并导出 CSV。
-2. **内容生成系统**：基于关键词批量生成 YouTube 视频（标题/描述/封面/旁白/成品），含三条相互隔离的流程：
-   - **流程一（全自动）**：关键词 + 视频模板 + 变量 → AI 元数据/封面/旁白 → Edge TTS → Remotion 渲染出片。
-   - **流程二（半自动）**：AI 出元数据 + 分镜脚本 → 人工上传分镜视频 → ffmpeg 合并。
-   - **流程三（全新三段式长视频）**：独立 `flow3` 模块，产出 16:9 1080P、最长 4 分钟的长视频——SegA Hook（AI 出 Prompt + 人工上传 mp4）+ SegB 左右分屏画中画（Remotion）+ SegC 尾图呼吸微动（ffmpeg zoompan），叠加 BGM 混音与防封去重。详见下文「流程三」。
+2. **内容生成系统（流程三）**：基于关键词生成 16:9 1080P、最长 4 分钟的三段式长视频——SegA Hook（AI 出 Prompt + 人工上传 mp4）+ SegB 左右分屏画中画（Remotion）+ SegC 尾图呼吸微动（ffmpeg zoompan），叠加 BGM 混音与防封去重。详见下文「内容生成系统（流程三）」。
 
-> 流程三与流程一/二**完全代码隔离**（独立 Django app `flow3`、独立前端页、独立 Agent 与素材库），后续可整块移除流程一/二而不影响流程三。
+> 历史说明：早期曾有流程一（全自动短视频）与流程二（半自动分镜合并），现已下线并从代码库移除；内容生成系统目前仅保留流程三（独立 Django app `flow3`）。
+
+两个系统的任务管理界面均采用统一的**列表式架构**：顶部「新增任务 / 按名称搜索 / 多选批量删除」工具栏，任务列表每行右侧提供操作按钮（详情、下载、日志、控制、删除等），点击「新增任务」进入独立创建界面。
 
 ## 技术栈
 
@@ -103,7 +102,7 @@ YouTube V3 使用 `videos.list` 和 `channels.list` 批量补齐视频、频道�
 
 ## 流程三：全新三段式长视频
 
-流程三是独立模块（后端 `backend/flow3`、前端菜单「内容生成 · 流程3」），单任务产出一个 16:9 1080P 长视频。
+流程三是独立模块（后端 `backend/flow3`，前端菜单「内容生成系统」下的二级项：任务管理 / Agent 管理 / 素材库），单任务产出一个 16:9 1080P 长视频。
 
 ### 成片结构
 | 段 | 时间 | 画面 | 生成方式 |
@@ -135,18 +134,20 @@ YouTube V3 使用 `videos.list` 和 `channels.list` 批量补齐视频、频道�
 关键词系统：
 - `POST /api/keyword-runs/`：创建关键词任务
 - `GET /api/keyword-runs/`：查询任务
+- `DELETE /api/keyword-runs/<id>/`：删除任务（结果级联删除）
+- `POST /api/keyword-runs/bulk_delete/`：批量删除（body: `{"ids": [...]}`）
+- `POST /api/keyword-runs/<id>/{pause,stop,restart}/`：任务控制
 - `GET /api/keyword-results/?run=<id>`：查询关键词结果
 - `GET /api/keyword-results/export/?run=<id>`：导出 CSV
 - `GET/PUT /api/settings/`：读取和修改全局 API、AI 配置
 
-内容生成（流程一/二）：
-- `/api/content-runs/`、`/api/content-items/`、`/api/content-agents/`、`/api/video-templates/`
-
-流程三（独立）：
+内容生成系统（流程三）：
 - `POST /api/flow3-runs/`：创建任务（出 Hook Prompt 后暂停）
 - `POST /api/flow3-runs/<id>/upload_hook/`：上传 Hook 视频
 - `POST /api/flow3-runs/<id>/resume/`：继续执行 Step4~7
 - `POST /api/flow3-runs/<id>/{pause,stop,restart}/`：任务控制
+- `DELETE /api/flow3-runs/<id>/`：删除任务（清理关联媒体文件）
+- `POST /api/flow3-runs/bulk_delete/`：批量删除（body: `{"ids": [...]}`）
 - `GET /api/flow3-runs/<id>/log/`：工作日志
 - `GET /api/flow3-runs/<id>/package/`：下载成品 zip
 - `/api/flow3-agents/`、`/api/flow3-materials/`：Agent 管理与素材库

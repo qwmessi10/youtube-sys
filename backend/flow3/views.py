@@ -79,7 +79,8 @@ class Flow3MaterialViewSet(viewsets.ModelViewSet):
 
 
 class Flow3RunViewSet(mixins.ListModelMixin, mixins.CreateModelMixin,
-                      mixins.RetrieveModelMixin, viewsets.GenericViewSet):
+                      mixins.RetrieveModelMixin, mixins.DestroyModelMixin,
+                      viewsets.GenericViewSet):
     """流程3 任务：创建（出 Hook prompt）、列表、Hook 上传、继续、暂停/停止/重启、日志、打包。"""
     queryset = Flow3Run.objects.all()
     pagination_class = TenPerPagePagination
@@ -171,6 +172,41 @@ class Flow3RunViewSet(mixins.ListModelMixin, mixins.CreateModelMixin,
         run.save(update_fields=["task_token", "status", "error_message", "updated_at"])
         process_flow3_run.delay(run.id, str(run.task_token))
         return Response(Flow3RunSerializer(run).data)
+
+    def _delete_run_files(self, run):
+        """删除任务关联的所有媒体文件（成品/中间产物/上传/生图/音频），避免残留占空间。"""
+        for f in (run.hook_video, run.blur_bg_file, run.tail_image_file,
+                  run.segb_file, run.segc_file, run.rendered_file, run.thumbnail_file):
+            try:
+                if f:
+                    f.delete(save=False)
+            except Exception:
+                pass
+        # 旁白音频（JSON 里存相对路径）
+        for a in (run.narration_audio or []):
+            try:
+                p = os.path.join(settings.MEDIA_ROOT, a.get("file", ""))
+                if a.get("file") and os.path.exists(p):
+                    os.remove(p)
+            except Exception:
+                pass
+
+    def perform_destroy(self, instance):
+        self._delete_run_files(instance)
+        instance.delete()
+
+    @action(detail=False, methods=["post"])
+    def bulk_delete(self, request):
+        """批量删除任务。参数：ids=[1,2,3]。逐个清理媒体文件后删除记录。"""
+        ids = request.data.get("ids") or []
+        if not isinstance(ids, list) or not ids:
+            return Response({"detail": "请提供要删除的任务 id 列表。"}, status=status.HTTP_400_BAD_REQUEST)
+        runs = Flow3Run.objects.filter(id__in=ids)
+        count = runs.count()
+        for run in runs:
+            self._delete_run_files(run)
+        runs.delete()
+        return Response({"detail": f"已删除 {count} 个任务。", "deleted": count})
 
     @action(detail=True, methods=["get"])
     def log(self, request, pk=None):

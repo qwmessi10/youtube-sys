@@ -76,7 +76,8 @@ class GlobalSettingViewSet(viewsets.ModelViewSet):
         return super().list(request, *args, **kwargs)
 
 
-class KeywordRunViewSet(mixins.ListModelMixin, mixins.CreateModelMixin, mixins.RetrieveModelMixin, viewsets.GenericViewSet):
+class KeywordRunViewSet(mixins.ListModelMixin, mixins.CreateModelMixin, mixins.RetrieveModelMixin,
+                        mixins.DestroyModelMixin, viewsets.GenericViewSet):
     queryset = KeywordRun.objects.prefetch_related("results").all()
     serializer_class = KeywordRunSerializer
     pagination_class = TenPerPagePagination
@@ -139,6 +140,15 @@ class KeywordRunViewSet(mixins.ListModelMixin, mixins.CreateModelMixin, mixins.R
             "root_keyword": run.root_keyword,
             "run_log": run.run_log or {},
         })
+
+    @action(detail=False, methods=["post"])
+    def bulk_delete(self, request):
+        """批量删除任务（结果经外键 CASCADE 一并删除）。参数：ids=[1,2,3]。"""
+        ids = request.data.get("ids") or []
+        if not isinstance(ids, list) or not ids:
+            return Response({"detail": "请提供要删除的任务 id 列表。"}, status=status.HTTP_400_BAD_REQUEST)
+        count, _ = KeywordRun.objects.filter(id__in=ids).delete()
+        return Response({"detail": "已删除选中任务。", "deleted": count})
 
 
 class KeywordResultViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewsets.GenericViewSet):

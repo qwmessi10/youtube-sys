@@ -552,8 +552,10 @@ def render_segment_b(*, promo_code, blur_bg_abs, screen_abs, screen_duration,
 # ===========================================================================
 def render_segment_c(image_abs, segc_duration, output_abs_path, fps=30, width=1920, height=1080):
     """
-    用 ffmpeg zoompan 把静态尾图渲成带呼吸缩放的视频段（无音轨）。
+    用 ffmpeg zoompan 把静态尾图渲成带呼吸缩放的视频段。
     呼吸：缩放在 1.0~1.1 之间缓慢往复；时长 segc_duration 秒。
+    关键：附带一条静音音轨（anullsrc），确保三段 concat 时音频流对齐不丢
+    （SegC 本无声，但若无音轨会导致整片 concat 退化成「仅视频」，旁白全丢）。
     """
     os.makedirs(os.path.dirname(output_abs_path), exist_ok=True)
     total_frames = max(1, int(round(segc_duration * fps)))
@@ -567,10 +569,13 @@ def render_segment_c(image_abs, segc_duration, output_abs_path, fps=30, width=19
     )
     cmd = [
         "ffmpeg", "-y", "-loop", "1", "-i", image_abs,
+        # 第二路输入：立体声静音源，给 SegC 补一条静音音轨。
+        "-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=44100",
         "-t", str(segc_duration),
         "-vf", vf,
         "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
         "-pix_fmt", "yuv420p", "-r", str(fps),
+        "-c:a", "aac", "-b:a", "128k", "-shortest",
         output_abs_path,
     ]
     result = subprocess.run(cmd, capture_output=True, text=True)

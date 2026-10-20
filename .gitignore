@@ -16,3 +16,6 @@ video/
 # 后续需求笔记，暂不纳入仓库
 打分规则更新.txt
 
+# WorkBuddy AI 本地工作数据（内存日志等，含敏感片段，不入库）
+.workbuddy-ai/
+

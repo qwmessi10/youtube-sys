@@ -5,12 +5,19 @@ import { PromoVideo, promoSchema, defaultPromoProps } from "./PromoVideo";
 import { SplitScreenPromo, splitScreenSchema, defaultSplitScreenProps } from "./SplitScreenPromo";
 import { RegistrationPromo, registrationSchema, defaultRegistrationProps } from "./RegistrationPromo";
 import { RegistrationPromoV2, registrationV2Schema, defaultRegistrationV2Props } from "./RegistrationPromoV2";
+import { Flow3SegmentB, flow3SegBSchema, defaultFlow3SegBProps } from "./Flow3SegmentB";
 
 const FPS = 30;
 
 // 时长按实际 inputProps.totalDuration 覆盖，默认 16s。
 const durationFromProps = ({ props }: { props: { totalDuration?: number } }) => {
   const total = props.totalDuration && props.totalDuration > 0 ? props.totalDuration : 16;
+  return { durationInFrames: Math.round(total * FPS), fps: FPS };
+};
+
+// 流程3 SegB：时长 = segDuration（TTS 旁白实际总时长）。
+const durationFromSegDuration = ({ props }: { props: { segDuration?: number } }) => {
+  const total = props.segDuration && props.segDuration > 0 ? props.segDuration : 23;
   return { durationInFrames: Math.round(total * FPS), fps: FPS };
 };
 
@@ -64,6 +71,18 @@ export const RemotionRoot: React.FC = () => {
         schema={registrationV2Schema}
         defaultProps={defaultRegistrationV2Props}
         calculateMetadata={durationFromProps}
+      />
+      {/* 流程3 · Segment B 画中画（横屏，模糊底图+Promo文字+9:16录屏，左右随机） */}
+      <Composition
+        id="Flow3SegmentB"
+        component={Flow3SegmentB}
+        durationInFrames={23 * FPS}
+        fps={FPS}
+        width={1920}
+        height={1080}
+        schema={flow3SegBSchema}
+        defaultProps={defaultFlow3SegBProps}
+        calculateMetadata={durationFromSegDuration}
       />
     </>
   );

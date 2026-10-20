@@ -5,6 +5,7 @@ import { ElMessage } from "element-plus";
 import ContentTasks from "./components/ContentTasks.vue";
 import ContentAgents from "./components/ContentAgents.vue";
 import VideoTemplates from "./components/VideoTemplates.vue";
+import Flow3System from "./components/Flow3System.vue";
 
 // 当前菜单从 localStorage 恢复，刷新后停留在原页面而不是跳回默认。
 const activeMenu = ref(localStorage.getItem("activeMenu") || "tasks");
@@ -42,7 +43,8 @@ let sePollTimer = null;            // 运行中任务的进度轮询定时器
 
 const menuTitles = {
   tasks: "任务管理", agents: "关键词 Agent 管理", "suggest-expand": "获取 Suggest API 长尾词",
-  "content-tasks": "内容生成 - 任务管理", "content-agents": "内容生成 Agent 管理", "video-templates": "内容生成 - 视频模板", settings: "全局设置",
+  "content-tasks": "内容生成 - 任务管理", "content-agents": "内容生成 Agent 管理", "video-templates": "内容生成 - 视频模板",
+  "flow3": "内容生成系统 · 流程3", settings: "全局设置",
 };
 const menuTitle = computed(() => menuTitles[activeMenu.value] || "关键词系统");
 
@@ -353,6 +355,8 @@ watch(activeMenu, (menu) => {
           <el-menu-item index="video-templates">视频模板</el-menu-item>
           <el-menu-item index="content-agents">内容生成 Agent 管理</el-menu-item>
         </el-sub-menu>
+        <!-- 流程3：全新内容生成系统（独立菜单，与流程1/2 隔离，便于后续整块删除流程1/2） -->
+        <el-menu-item index="flow3">内容生成 · 流程3</el-menu-item>
         <el-sub-menu index="tools">
           <template #title>实用工具</template>
           <el-menu-item index="suggest-expand">获取 Suggest API 长尾词</el-menu-item>
@@ -510,6 +514,7 @@ watch(activeMenu, (menu) => {
         <ContentTasks v-else-if="activeMenu === 'content-tasks'" :options="options" :injected-keywords="injectedKeywords" />
         <VideoTemplates v-else-if="activeMenu === 'video-templates'" />
         <ContentAgents v-else-if="activeMenu === 'content-agents'" />
+        <Flow3System v-else-if="activeMenu === 'flow3'" />
         <el-card v-else-if="activeMenu === 'settings'" shadow="never">
           <template #header><strong>第三方 API 与 AI 接入配置</strong></template>
           <p class="hint">保存后将优先使用这里的值；AI 配置已预留，第一期不会调用 AI。</p>

@@ -29,6 +29,9 @@ function rewriteMediaPaths(props) {
       : p;
   const next = { ...props };
   if (next.coverSrc) next.coverSrc = toUrl(next.coverSrc);
+  // 流程3 SegB 的媒体字段（高斯模糊底图 / 9:16 录屏）也需改写成 HTTP URL。
+  if (next.blurBgSrc) next.blurBgSrc = toUrl(next.blurBgSrc);
+  if (next.screenSrc) next.screenSrc = toUrl(next.screenSrc);
   if (Array.isArray(next.shots)) {
     next.shots = next.shots.map((s) => ({ ...s, audioSrc: toUrl(s.audioSrc) }));
   }

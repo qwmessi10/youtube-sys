@@ -42,6 +42,22 @@ class Flow3Agent(models.Model):
         return self.name
 
 
+class Flow3MaterialGroup(models.Model):
+    """
+    Hook 素材分组（仅 hook 素材使用；录屏/BGM 不分组）。
+    系统内置「默认分组」(is_default=True) 不可删除；删除其他分组时组内素材转入默认分组。
+    """
+    name = models.CharField(max_length=100, unique=True)
+    is_default = models.BooleanField(default=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-is_default", "name"]
+
+    def __str__(self):
+        return self.name
+
+
 class Flow3Material(models.Model):
     """
     流程3 专属素材库（与 content_gen 的模板 assets 完全不同、隔离）。
@@ -73,6 +89,10 @@ class Flow3Material(models.Model):
     file = models.FileField(upload_to="flow3/materials/")
     duration = models.FloatField(null=True, blank=True)        # 视频/音频时长（秒），ffprobe 探测
     tag = models.CharField(max_length=16, choices=TAG_CHOICES, default=TAG_UNUSED)  # 使用状态标签
+    # Hook 素材所属分组（仅 hook 用；空视为默认分组）。录屏/BGM 不分组，保持 null。
+    group = models.ForeignKey(
+        "Flow3MaterialGroup", on_delete=models.SET_NULL, null=True, blank=True, related_name="materials"
+    )
     enabled = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -123,6 +143,14 @@ class Flow3Run(models.Model):
     hook_material = models.ForeignKey(
         "Flow3Material", on_delete=models.SET_NULL, null=True, blank=True, related_name="used_by_runs"
     )
+    # 创建时选用/随机到的 9:16 录屏素材（可空，空则运行时随机取启用的）。
+    screen_material = models.ForeignKey(
+        "Flow3Material", on_delete=models.SET_NULL, null=True, blank=True, related_name="screen_used_by_runs"
+    )
+    # 批量/随机取 hook 的来源分组（创建任务时必选；随机只在此分组的未使用素材中取）。
+    hook_group = models.ForeignKey(
+        "Flow3MaterialGroup", on_delete=models.SET_NULL, null=True, blank=True, related_name="runs"
+    )
     narration = models.JSONField(default=dict, blank=True)     # 旁白脚本 {shots:[{index,duration,narration}]}
     narration_audio = models.JSONField(default=list, blank=True)  # TTS 产出 [{index,file,provider}]
     blur_bg_file = models.FileField(upload_to="flow3/blur_bg/", blank=True, null=True)   # SegB 高斯模糊底图
@@ -147,6 +175,8 @@ class Flow3Run(models.Model):
     task_token = models.UUIDField(default=uuid.uuid4, editable=False)
     error_message = models.TextField(blank=True)
     run_log = models.JSONField(default=dict, blank=True)       # 全流程详细日志（每步输入/输出/耗时/状态）
+    started_at = models.DateTimeField(null=True, blank=True)   # 首次进入 running 的时间
+    finished_at = models.DateTimeField(null=True, blank=True)  # completed/failed 的时间
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

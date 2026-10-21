@@ -14,15 +14,23 @@ from rest_framework.pagination import PageNumberPagination
 from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 from rest_framework.response import Response
 
-from .models import Flow3Agent, Flow3Material, Flow3Run
+from .models import Flow3Agent, Flow3Material, Flow3MaterialGroup, Flow3Run
 from .serializers import (
     Flow3AgentSerializer,
+    Flow3MaterialGroupSerializer,
     Flow3MaterialSerializer,
     Flow3RunCreateSerializer,
     Flow3RunSerializer,
 )
-from .services import get_default_agent_prompt, probe_duration
-from .tasks import continue_flow3_run, process_flow3_run
+from .services import (
+    _generate_image_prompt,
+    generate_hook_prompt,
+    generate_metadata,
+    generate_narration_script,
+    get_default_agent_prompt,
+    probe_duration,
+)
+from .tasks import SEGB_TARGET_SHOT_COUNT, SEGB_TARGET_SHOT_DURATION, continue_flow3_run, process_flow3_run
 
 
 class TenPerPagePagination(PageNumberPagination):
@@ -43,6 +51,46 @@ class Flow3AgentViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin,
         agent = self.get_object()
         return Response({"prompt": get_default_agent_prompt(agent.agent_type)})
 
+    @action(detail=True, methods=["post"])
+    def run_once(self, request, pk=None):
+        """
+        单独试运行某个 Agent（调试提示词用）。不创建任务、不消耗素材、不产视频。
+        入参：keyword（必填）、promo_code、country、repeat（仅 hook，默认1，运行多次得多条 prompt）。
+        返回该 Agent 的产出；hook 返回 prompts 列表，其余返回对应结构。
+        """
+        agent = self.get_object()
+        keyword = (request.data.get("keyword") or "").strip()
+        if not keyword:
+            return Response({"detail": "请填写关键词。"}, status=status.HTTP_400_BAD_REQUEST)
+        # 构造临时 Run（不保存到库），仅承载生成函数所需上下文。
+        tmp = Flow3Run(
+            keyword=keyword,
+            promo_code=(request.data.get("promo_code") or "").strip(),
+            country=(request.data.get("country") or "IN").strip(),
+            language=(request.data.get("language") or "en-IN").strip(),
+        )
+        try:
+            if agent.agent_type == Flow3Agent.AGENT_HOOK:
+                repeat = int(request.data.get("repeat") or 1)
+                repeat = max(1, min(repeat, 20))
+                prompts = []
+                for _ in range(repeat):
+                    text, _log = generate_hook_prompt(tmp)
+                    prompts.append(text)
+                return Response({"agent_type": agent.agent_type, "prompts": prompts})
+            if agent.agent_type == Flow3Agent.AGENT_NARRATION:
+                data, _log = generate_narration_script(tmp, SEGB_TARGET_SHOT_COUNT, SEGB_TARGET_SHOT_DURATION)
+                return Response({"agent_type": agent.agent_type, "narration": data})
+            if agent.agent_type == Flow3Agent.AGENT_METADATA:
+                data, _log = generate_metadata(tmp)
+                return Response({"agent_type": agent.agent_type, "metadata": data})
+            if agent.agent_type in (Flow3Agent.AGENT_BLUR_BG, Flow3Agent.AGENT_TAIL_IMAGE):
+                text, _log = _generate_image_prompt(tmp, agent.agent_type)
+                return Response({"agent_type": agent.agent_type, "image_prompt": text})
+            return Response({"detail": "该 Agent 不支持试运行。"}, status=status.HTTP_400_BAD_REQUEST)
+        except Exception as exc:
+            return Response({"detail": f"运行失败：{exc}"}, status=status.HTTP_400_BAD_REQUEST)
+
 
 class Flow3MaterialViewSet(viewsets.ModelViewSet):
     """流程3 素材库：9:16 录屏 + BGM 的增删改查。上传时自动探测时长。"""
@@ -56,6 +104,9 @@ class Flow3MaterialViewSet(viewsets.ModelViewSet):
         mtype = self.request.query_params.get("type")
         if mtype:
             qs = qs.filter(material_type=mtype)
+        group = self.request.query_params.get("group")
+        if group:
+            qs = qs.filter(group_id=group)
         return qs
 
     def perform_create(self, serializer):
@@ -86,11 +137,19 @@ class Flow3MaterialViewSet(viewsets.ModelViewSet):
         files = request.FILES.getlist("files") or request.FILES.getlist("file")
         if not files:
             return Response({"detail": "请选择要上传的文件。"}, status=status.HTTP_400_BAD_REQUEST)
+        # hook 素材归属分组：传了 group 用之，否则落到默认分组（仅 hook 分组）。
+        group = None
+        if mtype == Flow3Material.TYPE_HOOK:
+            gid = request.data.get("group")
+            if gid:
+                group = Flow3MaterialGroup.objects.filter(id=gid).first()
+            if group is None:
+                group = Flow3MaterialGroup.objects.filter(is_default=True).first()
         created = []
         for f in files:
             obj = Flow3Material.objects.create(
                 material_type=mtype, name=f.name, file=f,
-                tag=Flow3Material.TAG_UNUSED, enabled=True,
+                tag=Flow3Material.TAG_UNUSED, enabled=True, group=group,
             )
             self._fill_duration(obj)
             created.append(obj)
@@ -136,11 +195,56 @@ class Flow3RunViewSet(mixins.ListModelMixin, mixins.CreateModelMixin,
     def create(self, request, *args, **kwargs):
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        # 随机种子：左右布局 + BGM 抽取，创建时定下并记录，便于复现。
-        run = serializer.save(
+        data = dict(serializer.validated_data)
+        count = data.pop("count", 1) or 1
+        hook_group = data.get("hook_group")
+        hook_material = data.get("hook_material")
+
+        # 校验所选 hook 分组内「未使用 + 启用」素材数量（批量/随机都在该分组内取）。
+        avail_qs = Flow3Material.objects.filter(
+            material_type=Flow3Material.TYPE_HOOK, tag=Flow3Material.TAG_UNUSED, enabled=True,
+        )
+        if hook_group is not None:
+            avail_qs = avail_qs.filter(group=hook_group)
+        avail = list(avail_qs)
+
+        if count > 1:
+            # —— 批量模式：强制随机、不吃手动指定的 hook_material；数量不超过分组可用数 —— 
+            data["hook_material"] = None
+            if count > len(avail):
+                gname = hook_group.name if hook_group else "（全部）"
+                return Response(
+                    {"detail": f"所选分组「{gname}」可用未使用 Hook 素材仅 {len(avail)} 个，无法批量生成 {count} 个任务。"},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            # 预分配不重复素材：打乱后依次分配并标记已使用。
+            picks = random.sample(avail, count)
+            runs = []
+            for m in picks:
+                r = Flow3Run.objects.create(
+                    status=Flow3Run.STATUS_PENDING,
+                    layout_seed=random.randint(0, 2_000_000_000),
+                    bgm_seed=random.randint(0, 2_000_000_000),
+                    hook_material=m, **data,
+                )
+                m.tag = Flow3Material.TAG_USED
+                m.save(update_fields=["tag", "updated_at"])
+                runs.append(r)
+                process_flow3_run.delay(r.id, str(r.task_token))
+            return Response(Flow3RunSerializer(runs, many=True).data, status=status.HTTP_201_CREATED)
+
+        # —— 单个模式 —— 
+        # 若未手动指定素材、且选了分组却无可用素材 → 直接报错阻止创建。
+        if hook_material is None and hook_group is not None and not avail:
+            return Response(
+                {"detail": f"所选分组「{hook_group.name}」无可用未使用的 Hook 素材，无法创建任务。"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        run = Flow3Run.objects.create(
             status=Flow3Run.STATUS_PENDING,
             layout_seed=random.randint(0, 2_000_000_000),
             bgm_seed=random.randint(0, 2_000_000_000),
+            **data,
         )
         process_flow3_run.delay(run.id, str(run.task_token))
         return Response(Flow3RunSerializer(run).data, status=status.HTTP_201_CREATED)
@@ -175,6 +279,40 @@ class Flow3RunViewSet(mixins.ListModelMixin, mixins.CreateModelMixin,
         run.save(update_fields=["task_token", "status", "updated_at"])
         continue_flow3_run.delay(run.id, str(run.task_token))
         return Response(Flow3RunSerializer(run).data)
+
+    def _dispatch_retry(self, run):
+        """重试失败任务：从失败步骤继续（各步幂等跳过已完成部分）。"""
+        run.task_token = uuid.uuid4()
+        run.status = Flow3Run.STATUS_RUNNING
+        run.error_message = ""
+        run.save(update_fields=["task_token", "status", "error_message", "updated_at"])
+        # 已有 hook 视频（素材或已上传）→ 从 Step4~7 继续；否则从头（重新出 prompt）。
+        if run.hook_video:
+            continue_flow3_run.delay(run.id, str(run.task_token))
+        else:
+            process_flow3_run.delay(run.id, str(run.task_token))
+
+    @action(detail=True, methods=["post"])
+    def retry(self, request, pk=None):
+        """手动重试：仅失败任务，从失败点继续。"""
+        run = self.get_object()
+        if run.status != Flow3Run.STATUS_FAILED:
+            return Response({"detail": "只有失败的任务可以重试。"}, status=status.HTTP_409_CONFLICT)
+        self._dispatch_retry(run)
+        return Response(Flow3RunSerializer(run).data)
+
+    @action(detail=False, methods=["post"])
+    def bulk_retry(self, request):
+        """批量重试：对 ids 里处于 failed 的任务逐个重试。参数：ids=[...]。"""
+        ids = request.data.get("ids") or []
+        if not isinstance(ids, list) or not ids:
+            return Response({"detail": "请提供要重试的任务 id 列表。"}, status=status.HTTP_400_BAD_REQUEST)
+        runs = Flow3Run.objects.filter(id__in=ids, status=Flow3Run.STATUS_FAILED)
+        n = 0
+        for run in runs:
+            self._dispatch_retry(run)
+            n += 1
+        return Response({"detail": f"已重试 {n} 个失败任务。", "retried": n})
 
     @action(detail=True, methods=["post"])
     def pause(self, request, pk=None):
@@ -274,3 +412,20 @@ class Flow3RunViewSet(mixins.ListModelMixin, mixins.CreateModelMixin,
         resp = HttpResponse(buffer.getvalue(), content_type="application/zip")
         resp["Content-Disposition"] = f'attachment; filename="flow3_{run.id}_{timezone.now():%Y%m%d}.zip"'
         return resp
+
+
+class Flow3MaterialGroupViewSet(viewsets.ModelViewSet):
+    """Hook 素材分组的增删改查。默认分组不可删；删除分组时组内素材转入默认分组。"""
+    queryset = Flow3MaterialGroup.objects.all()
+    serializer_class = Flow3MaterialGroupSerializer
+    pagination_class = None  # 分组数量少，不分页
+
+    def destroy(self, request, *args, **kwargs):
+        group = self.get_object()
+        if group.is_default:
+            return Response({"detail": "默认分组不可删除。"}, status=status.HTTP_409_CONFLICT)
+        default = Flow3MaterialGroup.objects.filter(is_default=True).first()
+        # 组内素材转入默认分组（不连带删素材）。
+        group.materials.update(group=default)
+        group.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)

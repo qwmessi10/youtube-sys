@@ -381,7 +381,6 @@ onUnmounted(() => stopPoll());
           <el-form-item label="优惠码"><el-input v-model="form.promo_code" placeholder="如 ZH567" /></el-form-item>
           <el-form-item label="总时长(秒)"><el-input-number v-model="form.total_duration" :min="30" :max="600" :step="10" /></el-form-item>
           <el-form-item label="国家"><el-input v-model="form.country" style="width: 160px" /></el-form-item>
-          <el-form-item label="赛事"><el-input v-model="form.event_name" placeholder="选填，如 IPL 2026" /></el-form-item>
           <el-form-item label="语言"><el-input v-model="form.language" style="width: 160px" placeholder="en-IN" /></el-form-item>
           <el-form-item label="Hook 素材">
             <el-select v-model="form.hook_material" clearable filterable placeholder="不选=随机取未使用素材" style="width: 360px">
@@ -501,7 +500,7 @@ onUnmounted(() => stopPoll());
         <el-descriptions-item label="关键词">{{ detailRun.keyword }}</el-descriptions-item>
         <el-descriptions-item label="优惠码">{{ detailRun.promo_code }}</el-descriptions-item>
         <el-descriptions-item label="总时长">{{ detailRun.total_duration }}s</el-descriptions-item>
-        <el-descriptions-item label="国家/赛事">{{ detailRun.country }} / {{ detailRun.event_name || '—' }}</el-descriptions-item>
+        <el-descriptions-item label="国家">{{ detailRun.country }}</el-descriptions-item>
         <el-descriptions-item label="标题" :span="2">{{ detailRun.title || '—' }}</el-descriptions-item>
         <el-descriptions-item label="描述" :span="2">{{ detailRun.description || '—' }}</el-descriptions-item>
         <el-descriptions-item v-if="detailRun.error_message" label="错误" :span="2"><span style="color:#f56c6c">{{ detailRun.error_message }}</span></el-descriptions-item>

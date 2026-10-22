@@ -246,6 +246,7 @@ class Flow3RunViewSet(mixins.ListModelMixin, mixins.CreateModelMixin,
                     status=Flow3Run.STATUS_PENDING,
                     layout_seed=random.randint(0, 2_000_000_000),
                     bgm_seed=random.randint(0, 2_000_000_000),
+                    promo_seed=random.randint(0, 2_000_000_000),
                     hook_material=m, **data,
                 )
                 m.tag = Flow3Material.TAG_USED
@@ -265,6 +266,7 @@ class Flow3RunViewSet(mixins.ListModelMixin, mixins.CreateModelMixin,
             status=Flow3Run.STATUS_PENDING,
             layout_seed=random.randint(0, 2_000_000_000),
             bgm_seed=random.randint(0, 2_000_000_000),
+            promo_seed=random.randint(0, 2_000_000_000),
             **data,
         )
         process_flow3_run.delay(run.id, str(run.task_token))

@@ -10,7 +10,9 @@
 import math
 import os
 import random
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 from celery import shared_task
 from celery.exceptions import SoftTimeLimitExceeded
@@ -47,10 +49,12 @@ def _can_continue(run_id, token):
     )
 
 
+# 并行步骤会并发写 run_log（JSON）；加锁 + 每次从 DB 重读最新 run_log 再追加，避免互相覆盖。
+_LOG_LOCK = threading.Lock()
+
+
 def _log_step(run, step, status, detail=None, error="", elapsed=None):
-    """往 run_log.steps 追加一步并落库，供前端实时查看。"""
-    log = run.run_log or {}
-    steps = log.get("steps") or []
+    """往 run_log.steps 追加一步并落库，供前端实时查看。线程安全（并行装配下不丢步骤）。"""
     entry = {"step": step, "status": status, "at": timezone.now().isoformat()}
     if elapsed is not None:
         entry["elapsed_seconds"] = round(elapsed, 2)
@@ -58,10 +62,15 @@ def _log_step(run, step, status, detail=None, error="", elapsed=None):
         entry["error"] = error
     if detail:
         entry.update(detail)
-    steps.append(entry)
-    log["steps"] = steps
-    run.run_log = log
-    run.save(update_fields=["run_log", "updated_at"])
+    with _LOG_LOCK:
+        # 从 DB 重读最新 run_log（可能已被其他线程追加），再 append，只更新 run_log 列。
+        fresh = Flow3Run.objects.only("run_log").get(pk=run.pk)
+        log = fresh.run_log or {}
+        steps = log.get("steps") or []
+        steps.append(entry)
+        log["steps"] = steps
+        Flow3Run.objects.filter(pk=run.pk).update(run_log=log, updated_at=timezone.now())
+        run.run_log = log  # 同步内存对象
 
 
 def _resolve_hook_material(run):
@@ -197,101 +206,93 @@ def _media_abs(rel_or_name):
 
 def _run_assembly(run, run_id, token):
     """Step4~7 主体。"""
-    # ---- Step4：Agent 生成。每步带幂等跳过：对应产出已存在则跳过，避免重启/续跑重复消耗 AI 额度。----
-    # 4a 旁白脚本
-    if (run.narration or {}).get("shots"):
-        narration = run.narration
-        _log_step(run, "narration_script", "skipped", detail={"reason": "已存在，跳过"})
-    else:
-        _log_step(run, "narration_script", "running")
-        started = time.monotonic()
-        narration, nlog = generate_narration_script(run, SEGB_TARGET_SHOT_COUNT, SEGB_TARGET_SHOT_DURATION)
-        run.narration = narration
-        run.save(update_fields=["narration", "updated_at"])
-        _log_step(run, "narration_script", "success", detail={
-            "model": nlog.get("model"), "prompt": nlog.get("prompt"),
-            "raw_output": nlog.get("raw_output"), "shots": narration.get("shots"),
-        }, elapsed=time.monotonic() - started)
+    # ---- Step4：Agent 生成（并行提速）。独立步骤并发跑，依赖步骤放第二波。幂等跳过保留。----
+    # 线程内只「生成 + 写内存属性/磁盘文件(save=False)」，不触发整行 save；主线程统一落库，避免并发写同一行。
+    def _gen_narration():
+        if (run.narration or {}).get("shots"):
+            return ("narration_script", "skipped", {"reason": "已存在，跳过"})
+        t = time.monotonic()
+        data, log = generate_narration_script(run, SEGB_TARGET_SHOT_COUNT, SEGB_TARGET_SHOT_DURATION)
+        run.narration = data
+        return ("narration_script", "success", {"model": log.get("model"), "prompt": log.get("prompt"),
+                "raw_output": log.get("raw_output"), "shots": data.get("shots"), "__elapsed": time.monotonic() - t})
+
+    def _gen_blur():
+        if run.blur_bg_file:
+            return ("blur_bg", "skipped", {"reason": "已存在，跳过"})
+        t = time.monotonic()
+        p, _ = _generate_image_prompt(run, "blur_bg")
+        f, ext = generate_image(p)
+        run.blur_bg_file.save(f"{run.id}_blur.{ext}", f, save=False)
+        return ("blur_bg", "success", {"image_prompt": p, "__elapsed": time.monotonic() - t})
+
+    def _gen_tail():
+        if run.tail_image_file:
+            return ("tail_image", "skipped", {"reason": "已存在，跳过"})
+        t = time.monotonic()
+        p, _ = _generate_image_prompt(run, "tail_image")
+        f, ext = generate_image(p)
+        run.tail_image_file.save(f"{run.id}_tail.{ext}", f, save=False)
+        return ("tail_image", "success", {"image_prompt": p, "__elapsed": time.monotonic() - t})
+
+    def _gen_meta():
+        if run.title:
+            return ("metadata", "skipped", {"reason": "已存在，跳过"})
+        t = time.monotonic()
+        m, _ = generate_metadata(run)
+        run.title, run.description, run.thumbnail_prompt = m["title"], m["description"], m["thumbnail_prompt"]
+        return ("metadata", "success", {"title": m["title"], "__elapsed": time.monotonic() - t})
+
+    # 第一波：narration / blur / tail / metadata 并发（互不依赖）。
+    with ThreadPoolExecutor(max_workers=4) as ex:
+        futs = {"narration": ex.submit(_gen_narration), "blur": ex.submit(_gen_blur),
+                "tail": ex.submit(_gen_tail), "meta": ex.submit(_gen_meta)}
+        res1 = {k: f.result() for k, f in futs.items()}  # 任一异常在此抛出 → 上层置 failed
+    run.save(update_fields=["narration", "blur_bg_file", "tail_image_file",
+                            "title", "description", "thumbnail_prompt", "updated_at"])
+    for step, st, detail in res1.values():
+        el = detail.pop("__elapsed", None)
+        _log_step(run, step, st, detail=detail, elapsed=el)
     if not _can_continue(run_id, token):
         return
+    narration = run.narration
 
-    # 4b TTS 合成（印式英语）
-    if run.narration_audio:
-        _log_step(run, "tts", "skipped", detail={"reason": "已存在，跳过"})
-    else:
-        _log_step(run, "tts", "running")
-        started = time.monotonic()
+    # 第二波：TTS（依赖 narration）+ 封面（依赖 metadata.thumbnail_prompt）并发。
+    def _gen_tts():
+        if run.narration_audio:
+            return ("tts", "skipped", {"reason": "已存在，跳过"})
+        t = time.monotonic()
         out_dir = os.path.join(settings.MEDIA_ROOT, "flow3", "narration")
-        audio_list, tts_log = generate_narration_audio(
-            narration.get("shots") or [], run.language, out_dir, f"{run.id}"
-        )
+        audio_list, log = generate_narration_audio(narration.get("shots") or [], run.language, out_dir, f"{run.id}")
         run.narration_audio = [
             {"index": a["index"], "file": os.path.relpath(a["file"], settings.MEDIA_ROOT).replace("\\", "/"),
-             "provider": a["provider"]}
-            for a in audio_list
+             "provider": a["provider"]} for a in audio_list
         ]
-        run.save(update_fields=["narration_audio", "updated_at"])
-        _log_step(run, "tts", "success", detail={"segments": tts_log.get("segments"), "audio_count": len(audio_list)},
-                  elapsed=time.monotonic() - started)
-    if not _can_continue(run_id, token):
-        return
+        return ("tts", "success", {"segments": log.get("segments"), "audio_count": len(audio_list),
+                "__elapsed": time.monotonic() - t})
 
-    # 4c 模糊底图
-    if run.blur_bg_file:
-        _log_step(run, "blur_bg", "skipped", detail={"reason": "已存在，跳过"})
-    else:
-        _log_step(run, "blur_bg", "running")
-        started = time.monotonic()
-        bg_prompt, bg_log = _generate_image_prompt(run, "blur_bg")
-        bg_file, bg_ext = generate_image(bg_prompt)
-        run.blur_bg_file.save(f"{run.id}_blur.{bg_ext}", bg_file, save=True)
-        _log_step(run, "blur_bg", "success", detail={"image_prompt": bg_prompt}, elapsed=time.monotonic() - started)
-    if not _can_continue(run_id, token):
-        return
-
-    # 4d 尾图
-    if run.tail_image_file:
-        _log_step(run, "tail_image", "skipped", detail={"reason": "已存在，跳过"})
-    else:
-        _log_step(run, "tail_image", "running")
-        started = time.monotonic()
-        tail_prompt, tail_log = _generate_image_prompt(run, "tail_image")
-        tail_file, tail_ext = generate_image(tail_prompt)
-        run.tail_image_file.save(f"{run.id}_tail.{tail_ext}", tail_file, save=True)
-        _log_step(run, "tail_image", "success", detail={"image_prompt": tail_prompt}, elapsed=time.monotonic() - started)
-    if not _can_continue(run_id, token):
-        return
-
-    # 4e 元数据
-    if run.title:
-        _log_step(run, "metadata", "skipped", detail={"reason": "已存在，跳过"})
-    else:
-        _log_step(run, "metadata", "running")
-        started = time.monotonic()
-        meta, mlog = generate_metadata(run)
-        run.title = meta["title"]
-        run.description = meta["description"]
-        run.thumbnail_prompt = meta["thumbnail_prompt"]
-        run.save(update_fields=["title", "description", "thumbnail_prompt", "updated_at"])
-        _log_step(run, "metadata", "success", detail={"title": meta["title"]}, elapsed=time.monotonic() - started)
-    if not _can_continue(run_id, token):
-        return
-
-    # 4f 封面图（按元数据的 thumbnail_prompt 生图，供打包交付）
-    if run.thumbnail_file:
-        _log_step(run, "thumbnail", "skipped", detail={"reason": "已存在，跳过"})
-    elif run.thumbnail_prompt:
-        _log_step(run, "thumbnail", "running", detail={"thumbnail_prompt": run.thumbnail_prompt})
-        started = time.monotonic()
+    def _gen_thumb():
+        if run.thumbnail_file:
+            return ("thumbnail", "skipped", {"reason": "已存在，跳过"})
+        if not run.thumbnail_prompt:
+            return ("thumbnail", "skipped", {"reason": "无封面提示词"})
+        t = time.monotonic()
         try:
-            tn_file, tn_ext = generate_image(run.thumbnail_prompt)
-            run.thumbnail_file.save(f"{run.id}_thumb.{tn_ext}", tn_file, save=True)
-            _log_step(run, "thumbnail", "success", elapsed=time.monotonic() - started)
+            f, ext = generate_image(run.thumbnail_prompt)
+            run.thumbnail_file.save(f"{run.id}_thumb.{ext}", f, save=False)
+            return ("thumbnail", "success", {"__elapsed": time.monotonic() - t})
         except Exception as exc:
-            # 封面失败不阻断出片（视频仍可交付，封面可后续重生成）。
-            _log_step(run, "thumbnail", "failed", error=str(exc), elapsed=time.monotonic() - started)
-    else:
-        _log_step(run, "thumbnail", "skipped", detail={"reason": "无封面提示词"})
+            # 封面失败不阻断出片。
+            return ("thumbnail", "failed", {"error__": str(exc), "__elapsed": time.monotonic() - t})
+
+    with ThreadPoolExecutor(max_workers=2) as ex:
+        ft, fth = ex.submit(_gen_tts), ex.submit(_gen_thumb)
+        r_tts, r_thumb = ft.result(), fth.result()
+    run.save(update_fields=["narration_audio", "thumbnail_file", "updated_at"])
+    for step, st, detail in (r_tts, r_thumb):
+        el = detail.pop("__elapsed", None)
+        err = detail.pop("error__", "")
+        _log_step(run, step, st, detail=detail or None, error=err, elapsed=el)
     if not _can_continue(run_id, token):
         return
 
@@ -341,6 +342,7 @@ def _run_assembly(run, run_id, token):
             screen_abs=screen_abs, screen_duration=screen_dur,
             shots=narration.get("shots") or [], narration_audio=audio_abs,
             segb_duration=segb_duration, layout_seed=run.layout_seed,
+            promo_variant=(run.promo_seed or 0) % 5,
             output_abs_path=segb_abs,
         )
         run.segb_file.name = f"flow3/segb/{run.id}_segb.mp4"

@@ -530,7 +530,7 @@ def probe_duration(abs_path):
 # ===========================================================================
 def render_segment_b(*, promo_code, blur_bg_abs, screen_abs, screen_duration,
                      shots, narration_audio, segb_duration, layout_seed,
-                     output_abs_path, render_url=None, timeout=1200):
+                     output_abs_path, promo_variant=0, render_url=None, timeout=1200):
     """
     通过 HTTP 调 render 容器的 Remotion 服务渲染 SegB（compositionId=Flow3SegmentB）。
     所有路径用 render 容器可见的共享卷绝对路径（/app/media/...）。
@@ -557,6 +557,7 @@ def render_segment_b(*, promo_code, blur_bg_abs, screen_abs, screen_duration,
         "screenDuration": screen_duration or 0,
         "segDuration": segb_duration or 23,
         "screenOnRight": screen_on_right,
+        "promoVariant": int(promo_variant),
         "shots": prop_shots,
     }
     body = {"inputProps": input_props, "outPath": output_abs_path, "compositionId": "Flow3SegmentB"}

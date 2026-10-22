@@ -168,6 +168,7 @@ class Flow3Run(models.Model):
     # —— 随机/防封参数 ——
     layout_seed = models.PositiveIntegerField(default=0)       # 左右布局随机种子（录屏左/右）
     bgm_seed = models.PositiveIntegerField(default=0)          # BGM 随机抽取种子
+    promo_seed = models.PositiveIntegerField(default=0)        # Promo 面板样式随机种子（variant = promo_seed % 5）
     bgm_file = models.CharField(max_length=500, blank=True)    # 实际选中的 BGM 相对路径（便于复现）
 
     # —— 控制/日志 ——

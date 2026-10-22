@@ -863,8 +863,17 @@ onUnmounted(() => stopPoll());
         <pre class="log-pre">{{ JSON.stringify(agentDrawerResult.narration.shots, null, 2) }}</pre>
       </template>
       <template v-else-if="agentDrawerResult.metadata">
-        <p class="hint">元数据：</p>
-        <pre class="log-pre">{{ JSON.stringify(agentDrawerResult.metadata, null, 2) }}</pre>
+        <div class="run-prompt-head">标题 <el-button link type="primary" size="small" @click="copyText(agentDrawerResult.metadata.title)">复制</el-button></div>
+        <pre class="log-pre">{{ agentDrawerResult.metadata.title }}</pre>
+        <div class="run-prompt-head">描述 <el-button link type="primary" size="small" @click="copyText(agentDrawerResult.metadata.description)">复制</el-button></div>
+        <pre class="log-pre">{{ agentDrawerResult.metadata.description }}</pre>
+        <div class="run-prompt-head">封面提示词（thumbnail_prompt） <el-button link type="primary" size="small" @click="copyText(agentDrawerResult.metadata.thumbnail_prompt)">复制</el-button></div>
+        <pre class="log-pre">{{ agentDrawerResult.metadata.thumbnail_prompt }}</pre>
+        <template v-if="agentDrawerResult.thumbnail_url">
+          <div class="run-prompt-head">封面图预览</div>
+          <img :src="agentDrawerResult.thumbnail_url" style="max-width:100%; border-radius:6px; margin-top:6px" />
+        </template>
+        <p v-if="agentDrawerResult.metadata.thumbnail_error" class="log-err">{{ agentDrawerResult.metadata.thumbnail_error }}</p>
       </template>
       <template v-else-if="agentDrawerResult.image_prompt">
         <div class="run-prompt-head">生图 Prompt <el-button link type="primary" size="small" @click="copyText(agentDrawerResult.image_prompt)">复制</el-button></div>

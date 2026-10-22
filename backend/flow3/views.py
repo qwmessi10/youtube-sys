@@ -83,7 +83,18 @@ class Flow3AgentViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin,
                 return Response({"agent_type": agent.agent_type, "narration": data})
             if agent.agent_type == Flow3Agent.AGENT_METADATA:
                 data, _log = generate_metadata(tmp)
-                return Response({"agent_type": agent.agent_type, "metadata": data})
+                # 试运行也直接按 thumbnail_prompt 生成封面图并返回预览 url。
+                thumb_url = ""
+                tp = (data.get("thumbnail_prompt") or "").strip()
+                if tp:
+                    try:
+                        tn_file, tn_ext = generate_image(tp)
+                        from django.core.files.storage import default_storage
+                        name = default_storage.save(f"flow3/agent_test/thumb_{uuid.uuid4().hex}.{tn_ext}", tn_file)
+                        thumb_url = default_storage.url(name)
+                    except Exception as exc:
+                        data["thumbnail_error"] = f"封面生成失败：{exc}"
+                return Response({"agent_type": agent.agent_type, "metadata": data, "thumbnail_url": thumb_url})
             if agent.agent_type in (Flow3Agent.AGENT_BLUR_BG, Flow3Agent.AGENT_TAIL_IMAGE):
                 text, _log = _generate_image_prompt(tmp, agent.agent_type)
                 return Response({"agent_type": agent.agent_type, "image_prompt": text})

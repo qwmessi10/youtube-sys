@@ -27,6 +27,7 @@ services:
       - "127.0.0.1:8000:8000"
     volumes:
       - media_data:/app/media   # 上传视频/封面/成品，与 worker、nginx 共享
+      - ./backend/flow3/prompts:/app/flow3/prompts   # Agent 提示词文件：界面保存直接落宿主，可 git 提交
     depends_on:
       db:
         condition: service_healthy

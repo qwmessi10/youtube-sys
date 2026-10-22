@@ -22,9 +22,11 @@ from .serializers import (
     Flow3RunCreateSerializer,
     Flow3RunSerializer,
 )
+from .prompt_store import export_one
 from .services import (
     _generate_image_prompt,
     generate_hook_prompt,
+    generate_image,
     generate_metadata,
     generate_narration_script,
     get_default_agent_prompt,
@@ -45,6 +47,14 @@ class Flow3AgentViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin,
     """流程3 Agent 管理：列表 + 编辑 prompt/enabled（Agent 由迁移种子维护，不增删）。"""
     queryset = Flow3Agent.objects.all()
     serializer_class = Flow3AgentSerializer
+
+    def perform_update(self, serializer):
+        # 保存即写文件：提示词同步导出到 flow3/prompts/<agent_type>.md（文件为真相源，便于提交 git）。
+        agent = serializer.save()
+        try:
+            export_one(agent.agent_type, agent.prompt)
+        except Exception:
+            pass
 
     @action(detail=True, methods=["get"])
     def default_prompt(self, request, pk=None):

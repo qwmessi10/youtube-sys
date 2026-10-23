@@ -1,0 +1,64 @@
+[
+{
+  "model": "flow3.flow3materialgroup",
+  "pk": 1,
+  "fields": {
+    "name": "默认分组",
+    "is_default": true,
+    "created_at": "2026-10-21T10:16:29.666Z"
+  }
+},
+{
+  "model": "flow3.flow3materialgroup",
+  "pk": 3,
+  "fields": {
+    "name": "1win",
+    "is_default": false,
+    "created_at": "2026-10-22T06:46:03.879Z"
+  }
+},
+{
+  "model": "flow3.flow3material",
+  "pk": 1,
+  "fields": {
+    "material_type": "screen_record",
+    "name": "1win cut.mp4",
+    "file": "flow3/materials/1win_cut.mp4",
+    "duration": 22.15,
+    "tag": "unused",
+    "group": null,
+    "enabled": true,
+    "created_at": "2026-10-20T06:59:45.359Z",
+    "updated_at": "2026-10-20T06:59:46.344Z"
+  }
+},
+{
+  "model": "flow3.flow3material",
+  "pk": 9,
+  "fields": {
+    "material_type": "hook",
+    "name": "Professional_showing_smartphone_…_20261022143832.mp4",
+    "file": "flow3/materials/Professional_showing_smartphone__20261022143832.mp4",
+    "duration": 8.0,
+    "tag": "used",
+    "group": 3,
+    "enabled": true,
+    "created_at": "2026-10-22T06:46:20.048Z",
+    "updated_at": "2026-10-22T07:23:13.455Z"
+  }
+},
+{
+  "model": "keywords.agentprompt",
+  "pk": 1,
+  "fields": {
+    "scoring_model": "2.0",
+    "agent_type": "intent",
+    "name": "博彩意图识别",
+    "description": "判断 Suggest 长尾词是否具备博彩投注意向，只放行高意向词进入打分。",
+    "prompt": "# 角色\n你是一个YouTube专业的关键词分析与体育、娱乐游戏运营，有10年的运营经验\n\n# 目标\n通过批量获取到的搜索词，判断搜索词是否有博彩意向；如果有博彩意向，则以json格式全部输出\n\n# 输入\n[input]\n\n# 输出\n[output]",
+    "enabled": true,
+    "created_at": "2026-10-19T09:24:58.688Z",
+    "updated_at": "2026-10-19T09:24:58.688Z"
+  }
+}
+]

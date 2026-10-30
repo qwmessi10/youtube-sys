@@ -13,6 +13,10 @@ render/out/
 # 本地测试用参考视频（体积大，不入库）
 video/
 
+# Uploader Agent 运行时文件（含密钥的 .env、临时下载/截图）
+uploader-agent/.env
+uploader-agent/_work/
+
 # 后续需求笔记，暂不纳入仓库
 打分规则更新.txt
 

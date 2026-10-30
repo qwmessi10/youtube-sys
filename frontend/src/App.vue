@@ -3,6 +3,7 @@ import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import axios from "axios";
 import { ElMessage, ElMessageBox } from "element-plus";
 import Flow3System from "./components/Flow3System.vue";
+import AdsPowerSystem from "./components/AdsPowerSystem.vue";
 
 // 当前菜单从 localStorage 恢复，刷新后停留在原页面而不是跳回默认。
 const activeMenu = ref(localStorage.getItem("activeMenu") || "tasks");
@@ -42,6 +43,7 @@ let sePollTimer = null;            // 运行中任务的进度轮询定时器
 const menuTitles = {
   tasks: "任务管理", agents: "关键词 Agent 管理", "suggest-expand": "获取 Suggest API 长尾词",
   "flow3-tasks": "内容生成 - 任务管理", "flow3-agents": "内容生成 - Agent 管理", "flow3-materials": "内容生成 - 素材库",
+  "adspower-browsers": "AdsPower 自动化 - 浏览器管理", "adspower-tasks": "AdsPower 自动化 - 任务管理",
   settings: "全局设置",
 };
 const menuTitle = computed(() => menuTitles[activeMenu.value] || "关键词系统");
@@ -387,9 +389,13 @@ watch(activeMenu, (menu) => {
           <template #title>实用工具</template>
           <el-menu-item index="suggest-expand">获取 Suggest API 长尾词</el-menu-item>
         </el-sub-menu>
+        <el-sub-menu index="adspower">
+          <template #title>AdsPower 自动化系统</template>
+          <el-menu-item index="adspower-browsers">AdsPower 浏览器管理</el-menu-item>
+          <el-menu-item index="adspower-tasks">任务管理</el-menu-item>
+        </el-sub-menu>
         <el-menu-item index="settings">全局设置</el-menu-item>
         <el-menu-item disabled index="data">数据抓取系统（后续）</el-menu-item>
-        <el-menu-item disabled index="adspower">AdsPower 自动化（隔离）</el-menu-item>
       </el-menu>
     </el-aside>
     <el-container>
@@ -560,6 +566,10 @@ watch(activeMenu, (menu) => {
         </template>
         <Flow3System
           v-else-if="['flow3-tasks', 'flow3-agents', 'flow3-materials'].includes(activeMenu)"
+          :view="activeMenu"
+        />
+        <AdsPowerSystem
+          v-else-if="['adspower-browsers', 'adspower-tasks'].includes(activeMenu)"
           :view="activeMenu"
         />
         <el-card v-else-if="activeMenu === 'settings'" shadow="never">

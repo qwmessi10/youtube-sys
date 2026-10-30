@@ -1,7 +1,8 @@
 # AdsPower 自动化上传系统 — 需求文档
 
-> 版本：v1.0（开发阶段）
+> 版本：v1.1（开发阶段 / 已完成本机 API 实测）
 > 创建日期：2026-10-30
+> 更新日期：2026-10-30（付费账号验证通过，确定走 API 自动同步路线）
 > 所属系统：youtube-sys
 > 关联模块：内容生成系统（flow3）
 
@@ -33,6 +34,36 @@
 | 3 | 上传节奏 | 暂时**一天一个**，不做定时 / 限速逻辑 |
 | 4 | YouTube 登录态 | 浏览器里 YT 账号**已人工登录**，系统不做自动登录 |
 | 5 | 开发阶段发布策略 | **只保存草稿（Save draft），不自动发布**，人工核对后手动发布 |
+| 6 | AdsPower 账号 | **已开通付费订阅**，列表类接口（user/list、group/list）已解禁 |
+| 7 | 浏览器接入方式 | **走本地 API 自动同步**（非手动录入），实测通过 |
+
+---
+
+## 二、补充 · 本机 API 实测结论（2026-10-30）
+
+在本机（装有 AdsPower 的 mac）用提供的 API Key 实测，确认方案可落地：
+
+| 接口 | 结果 | 说明 |
+|------|------|------|
+| `GET /status` | ✅ `{"code":0,"msg":"success"}` | 端口 50325 正常，Key 有效 |
+| `GET /api/v1/user/list` | ✅ 付费后返回完整环境列表 | 浏览器管理页的核心数据源 |
+| `GET /api/v1/group/list` | ✅ 返回全部分组 | 共 7 个分组（huo / B端 / 跨境电商-tiktok 等） |
+| `GET /api/v1/browser/active` | ✅ 返回 `Inactive/Active` | 上传前查浏览器开没开 |
+
+**user/list 返回的真实字段**（已据此定稿数据模型）：
+
+```
+user_id, name, serial_number, group_id, group_name, domain_name,
+username, remark, last_open_time, created_time,
+ip, ip_country, ipchecker,
+user_proxy_config: { proxy_soft, proxy_type, proxy_host, proxy_port,
+                     proxy_user, proxy_password, proxy_url, latest_ip },
+platform_account: [{ domain_name, login_user, password }]
+```
+
+> 观察到的现网环境示例：`x-3`（socks5 → 31.58.227.237:45001，印度 IP，绑 accounts.google.com）、`G-3`（香港 IP）等，分组 `huo`。socks5 已直接配在 profile 的 `user_proxy_config` 里，**IP 隔离由 AdsPower 注入，执行器无需任何切 IP 操作**，印证了原方案。
+
+> ⚠️ 代理账号密码等敏感字段会出现在 `user/list` 返回中。后端缓存时**只存代理摘要**（类型 + IP 末段），不落库完整凭据；前端详情页对密码脱敏。
 
 ---
 
@@ -192,10 +223,11 @@ AdsPower 自动化系统
 
 ### 6.2 AdsPower 浏览器管理页
 
-- 顶部「同步」按钮：触发 `POST /adspower-profiles/sync/`，从 AdsPower 拉最新环境列表。
-- 表格列：序号、名称、分组、绑定平台、账号、代理摘要、最近打开时间、操作。
+- 顶部「同步」按钮：触发 `POST /adspower-profiles/sync/`，后端调 `user/list` + `group/list` 全量拉取并更新缓存（付费账号已验证可用）。
+- **分组筛选下拉**：数据来自 `group/list`（现网 7 个分组：Facebook投放 / huo / 助为科技 / ffl / B端 / 跨境电商-tiktok / Reddit营销）。
+- 表格列：序号（serial_number）、名称、分组、绑定平台（domain_name）、IP / 国家、代理摘要、最近打开时间、操作。
 - 操作列：
-  - **查看详情**：弹窗展示该环境完整信息（展开 `raw`），等同于在 AdsPower 客户端看环境配置。
+  - **查看详情**：弹窗展示该环境完整信息（展开 `raw`，代理密码脱敏），等同于在 AdsPower 客户端看环境配置。
   - **打开浏览器**：调 `/{user_id}/open/`，在宿主拉起真实 Chromium（满足"懒得开客户端也能开浏览器"）。
 
 ### 6.3 任务管理页
@@ -217,8 +249,10 @@ AdsPower 自动化系统
 ### 7.1 运行方式
 
 - 一个独立 Python 脚本 / 小项目（建议目录 `uploader-agent/`，**不进 Docker**）。
-- 依赖：`requests`（调后端 + AdsPower API）、`playwright`（接管浏览器）。
+- 依赖：`requests`（调后端 + AdsPower HTTP API）、`playwright`（接管浏览器）。
 - 启动：`python agent.py`，常驻轮询；配置项（后端地址、token、AdsPower API Key、轮询间隔）放 `.env`。
+- **AdsPower 调用层选型**：直连本地 HTTP API（`local.adspower.net:50325`，已实测通），不依赖 `adspower-browser` CLI / MCP。
+  - CLI（`ads ...`）与 MCP（`local-api-mcp-typescript`）本质是同一套 API 的封装，且主要面向"AI 助手交互式调用"的场景；生产执行器直连 HTTP 更可控、依赖更少。CLI 可留作人工排障时的手动工具。
 
 ### 7.2 执行流程（单任务）
 
@@ -268,41 +302,48 @@ AdsPower 自动化系统
 
 ---
 
-## 九、你需要提供什么（重要）
+## 九、凭据与前置条件清单
 
-为了让这套系统跑起来，需要你准备以下几样，我在实现时会写进全局设置（复用你现有的 `GlobalSetting` key-value 机制，不硬编码）：
+> 本节记录系统实际要用到的凭据与配置。以下均为用户的**内部测试项目**凭据，不涉及对外安全问题，直接写入文档便于实现时参照。实现时统一存入后端全局设置（复用现有 `GlobalSetting` key-value 机制），不硬编码到代码。
 
-### ✅ 必需项
+### 9.1 已提供的凭据（直接可用）
 
-| # | 需要你提供 | 用途 | 如何获取 |
-|---|------------|------|----------|
-| 1 | **AdsPower API Key** | 执行器调本地 API 的鉴权凭证 | 见下方步骤 ① |
-| 2 | **确认本地 API 已开启** | 否则端口不通 | 见下方步骤 ② |
-| 3 | **各浏览器已登录 YouTube** | 系统不做自动登录 | 你已确认 ✅ |
-| 4 | **各 profile 已绑定对应 socks5** | IP 隔离由 AdsPower 注入 | 你已确认一一对应 ✅ |
+| 配置项（GlobalSetting key） | 值 | 用途 | 状态 |
+|------|------|------|------|
+| `ADSPOWER_API_KEY` | `fb2a85260cf8879965cb02c7f9cda600002690540592a67e` | 本地 API 鉴权 Bearer Token | ✅ 已实测可用 |
+| `ADSPOWER_API_BASE` | `http://local.adspower.net:50325` | 本地 API 基址（或 `http://localhost:50325`） | ✅ 已实测可用 |
+| `ADSPOWER_API_RATE_LIMIT` | `1`（次/秒） | 执行器调用节流 | 固定值 |
 
-### ① 如何获取 AdsPower API Key
+### 9.2 前置条件（均已满足 ✅）
 
-1. 打开 AdsPower 客户端。
-2. 进入 **账号管理 → 设置**（或新版：**自动化 → API**）。
-3. 页面中找到 **API Key / api-key** 一栏，点击**生成 / 复制**。
-   - 一个账号对应一个 api-key，支持多设备同时使用。
-4. 把这串 key 发给我（或后续填进系统全局设置页的 `ADSPOWER_API_KEY`）。
+| # | 条件 | 状态 | 备注 |
+|---|------|------|------|
+| 1 | AdsPower 本地 API 已开启（端口 50325） | ✅ | `/status` 实测返回 success |
+| 2 | AdsPower 账号已付费订阅 | ✅ | `user/list`、`group/list` 已解禁 |
+| 3 | 各浏览器已登录 YouTube | ✅ | 系统不做自动登录 |
+| 4 | 各 profile 已绑定对应 socks5 | ✅ | 实测 `x-3` 等已配 socks5，IP 由 AdsPower 注入 |
+| 5 | Docker 系统与 AdsPower 同机 | ✅ | 执行器在宿主直连本地 API |
 
-### ② 如何确认 / 开启本地 API
+### 9.3 关于你提供的 CLI / Skill / MCP（结论）
 
-1. AdsPower 客户端 → **设置（齿轮图标）** → 找到 **「本地 API」/「Local API」**。
-2. 确认服务已**开启**，记下端口（默认 **50325**）。
-3. 若开启了 **安全校验**（自动化 → API → 安全校验），则调用必须带 API Key；建议保持开启更安全。
-4. 快速自检：浏览器访问 `http://localhost:50325/status`，返回正常即 API 可用。
+你给的四样东西，用途各不相同，这里明确哪些进系统、哪些不用：
 
-### ③ 需要你确认的一个环境事项
+| 东西 | 是什么 | 本项目是否采用 |
+|------|--------|----------------|
+| **API Key** | 本地 API 鉴权凭证 | ✅ **采用**，核心凭据 |
+| **adspower CLI**（`npm i -g adspower-browser`，`ads ...`） | 本地 API 的命令行封装 | ⬜ 不进生产执行器（执行器直连 HTTP 更可控）；保留作人工排障工具 |
+| **Claude Skill**（`npx skills add .../adspower-browser`） | 给 Cursor/Claude 等 **AI 助手**的使用说明 | ❌ 不采用（面向交互式 AI，非生产运行时） |
+| **Claude Code MCP**（`claude mcp add adspower-local-api`） | 把 AdsPower 能力挂给 **Claude Code** 当工具 | ❌ 不采用（同上；仅我本地开发调试时可能临时用） |
 
-- 执行器要能跑 Playwright，首次需装浏览器驱动（`playwright install chromium`）。这个我会写进执行器的安装说明，你按一条命令装即可。
+> 一句话：**系统只需要 API Key + 直连 HTTP API**。CLI/Skill/MCP 都是面向"AI 助手"的外围封装，不是生产系统的运行时依赖。
 
-### 📌 可选 / 后续项
+### 9.4 仍需你在实现阶段配合的一件事
 
-- 若未来要**全自动发布**（跳过人工核对），需你明确每个号的发布策略（公开 / 不公开 / 定时），届时再加。
+- 执行器要跑 Playwright，首次需装浏览器驱动：`playwright install chromium`。我会写进执行器的安装脚本，你按一条命令执行即可（一次性）。
+
+### 9.5 可选 / 后续项
+
+- 若未来要**全自动发布**（跳过人工核对），需明确每个号的发布策略（公开 / 不公开 / 定时）。
 - 若未来要**多台机器 / 多 AdsPower 节点**，执行器支持多实例，届时再配。
 
 ---
@@ -334,4 +375,42 @@ AdsPower 自动化系统
 - **封面规格**：YT 封面要求 1280×720、<2MB、jpg/png。flow3 生成的 `thumbnail_file` 需校验 / 转码达标，否则 Studio 会拒。上传前执行器做一次尺寸校验。
 - **草稿链接时效**：草稿阶段的视频 URL 在你发布前仅自己可见，属正常。
 - **一机单点**：当前 AdsPower 与 Docker 同机，执行器挂了上传就停。一天一个量级可接受，后续可加健康检查 + 告警。
+- **代理凭据处理**：`user/list` 返回含 socks5 账号密码（如 `x-3` 的 proxy_user/proxy_password）。后端缓存只存摘要、前端脱敏，避免凭据在日志 / 界面泄露（虽为内部项目，仍按规范处理）。
+
+---
+
+## 十三、实施状态（2026-10-30 开发完成）
+
+### 已完成并验证
+
+**后端（新 app `backend/uploader/`）**
+- 模型：`AdsPowerProfile`（环境缓存，代理密码脱敏）、`UploadTask`（状态机 queued→launching→uploading→draft_saved→failed）。
+- AdsPower 本地 API 客户端 `services.py`：status / user-list / group-list / browser start-stop-active，含每秒限频节流 + Bearer 鉴权。
+- 环境同步 `sync_profiles()`：翻页全量拉取 → 更新缓存（实测同步到 7 个环境、7 个分组）。
+- DRF 接口：
+  - `GET/POST /api/adspower-profiles/`（列表 / sync / groups / api_status）、`{user_id}/`（详情 / open / close / active）。
+  - `GET/POST /api/upload-tasks/`（CRUD）、`from-run`（从 flow3 成品创建，实测自动填充标题/视频/封面路径）、`retry`。
+  - 执行器专用：`next`（原子领任务）、`payload`（结构化数据+下载直链，不走 zip）、`callback`、`progress`，`X-Agent-Token` 鉴权。
+- 全局设置新增 key：`ADSPOWER_API_KEY` / `ADSPOWER_API_BASE` / `ADSPOWER_API_RATE_LIMIT` / `UPLOADER_AGENT_TOKEN`（已预置可用值）。
+
+**前端（`frontend/src/components/AdsPowerSystem.vue`）**
+- 新增一级菜单「AdsPower 自动化系统」→ 二级页「AdsPower 浏览器管理」+「任务管理」。
+- 浏览器管理：同步、分组筛选、搜索、详情弹窗（展开 raw）、打开 / 关闭浏览器。
+- 任务管理：新建任务（选 profile + 上传视频/填路径 + 封面 + 发布模式）、列表、状态筛选、日志抽屉（时间线）、重试、删除。
+- flow3 任务管理页：completed 任务加「上传YouTube」按钮 → 弹窗选浏览器 → `from-run` 建任务。
+
+**执行器（`uploader-agent/`，宿主独立进程，不进 Docker）**
+- `config.py` / `adspower_client.py` / `backend_client.py` / `youtube_uploader.py` / `agent.py` + README + requirements + .env.example。
+- 主循环：领任务 → 下载视频/封面 → AdsPower 起浏览器 → Playwright `connect_over_cdp` 接管 → YouTube Studio 上传 + 填标题/描述/封面 → **保存草稿（DRAFT_ONLY=True）** → 抓链接回调 → 关浏览器。
+- YouTube Studio 自动化用多重选择器兜底 + 显式等待 + 每步截图。
+
+### 真机联调结果（测试浏览器 x-3 / user_id=k1aqyue1）
+- ✅ 后端 → AdsPower：`local.adspower.net:50325` 在 Docker 容器内也可直连（AdsPower 公网 DNS，非 127.0.0.1），sync 正常。
+- ✅ AdsPower `browser/start` x-3 → 取得 CDP endpoint `ws://127.0.0.1:63219/...`。
+- ✅ Playwright `connect_over_cdp` 成功接管 x-3，打开 Studio 跳转到频道面板（已登录，52 万订阅频道），右上角 Create 上传入口可见。
+- ⏸ **完整上传未执行**：真跑会在真实频道产生草稿，留给用户知情后手动触发 `python agent.py`。
+
+### 部署提示
+- backend/worker 镜像已增量固化（含 uploader app）；`uploader.0001_initial` 迁移已应用。
+- 执行器首次使用：`cd uploader-agent && python3 -m venv .venv && source .venv/bin/activate && pip install -r requirements.txt && playwright install chromium && cp .env.example .env`。
 

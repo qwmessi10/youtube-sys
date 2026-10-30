@@ -36,6 +36,10 @@ DEFAULT_SETTINGS = [
     ("ELEVENLABS_API_KEY", "内容生成流程一-ElevenLabs API Key（选 elevenlabs 时用）"),
     ("ELEVENLABS_VOICE_ID", "内容生成流程一-ElevenLabs 音色 ID（留空用默认）"),
     ("REMOTION_RENDER_URL", "内容生成流程一-Remotion 渲染服务地址（走 HTTP 调用时用）"),
+    ("ADSPOWER_API_KEY", "AdsPower 自动化-本地 API 鉴权 Key（账号管理→设置 获取）"),
+    ("ADSPOWER_API_BASE", "AdsPower 自动化-本地 API 基址，默认 http://local.adspower.net:50325"),
+    ("ADSPOWER_API_RATE_LIMIT", "AdsPower 自动化-本地 API 调用频率上限（次/秒），默认 1"),
+    ("UPLOADER_AGENT_TOKEN", "AdsPower 自动化-执行器回调鉴权 token（留空则不校验）"),
 ]
 
 SCORE_LABELS = {

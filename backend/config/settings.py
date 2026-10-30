@@ -17,6 +17,7 @@ INSTALLED_APPS = [
     "rest_framework",
     "keywords",
     "flow3",
+    "uploader",
 ]
 MIDDLEWARE = [
     "corsheaders.middleware.CorsMiddleware",

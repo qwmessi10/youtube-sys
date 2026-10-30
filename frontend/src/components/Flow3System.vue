@@ -217,6 +217,44 @@ function downloadPackage(run) {
   window.open(`/api/flow3-runs/${run.id}/package/`, "_blank");
 }
 
+// —— 上传到 YouTube（创建 AdsPower 上传任务）——
+const uploadDialog = ref(false);
+const uploadRun = ref(null);
+const uploadProfiles = ref([]);
+const uploadForm = ref({ profile: "", publish_mode: "draft" });
+const uploadSubmitting = ref(false);
+
+async function openUploadDialog(run) {
+  uploadRun.value = run;
+  uploadForm.value = { profile: "", publish_mode: "draft" };
+  uploadDialog.value = true;
+  try {
+    const { data } = await axios.get("/api/adspower-profiles/", { params: { page: 1, page_size: 200 } });
+    uploadProfiles.value = data.results || [];
+    if (!uploadProfiles.value.length) ElMessage.warning("没有可用浏览器，请先到 AdsPower 浏览器管理页同步");
+  } catch {
+    ElMessage.error("加载浏览器列表失败");
+  }
+}
+
+async function submitUpload() {
+  if (!uploadForm.value.profile) return ElMessage.warning("请选择目标浏览器");
+  uploadSubmitting.value = true;
+  try {
+    await axios.post("/api/upload-tasks/from-run/", {
+      run_id: uploadRun.value.id,
+      profile: uploadForm.value.profile,
+      publish_mode: uploadForm.value.publish_mode,
+    });
+    ElMessage.success("上传任务已创建，可到「AdsPower 自动化系统 - 任务管理」查看进度");
+    uploadDialog.value = false;
+  } catch (e) {
+    ElMessage.error(e.response?.data?.detail || "创建上传任务失败");
+  } finally {
+    uploadSubmitting.value = false;
+  }
+}
+
 async function openLog(run) {
   logDrawer.value = true;
   logLoading.value = true;
@@ -577,12 +615,13 @@ onUnmounted(() => stopPoll());
           <el-table-column label="开始时间" min-width="150"><template #default="{ row }">{{ datetime(row.started_at) }}</template></el-table-column>
           <el-table-column label="结束时间" min-width="150"><template #default="{ row }">{{ datetime(row.finished_at) }}</template></el-table-column>
           <el-table-column label="耗时" width="90"><template #default="{ row }">{{ formatDuration(row.duration_seconds) }}</template></el-table-column>
-          <el-table-column label="操作" width="360" fixed="right"><template #default="{ row }">
+          <el-table-column label="操作" width="500" fixed="right"><template #default="{ row }">
             <el-button v-if="row.status === 'awaiting_hook'" size="small" type="warning" @click="openHookUpload(row)">上传Hook</el-button>
             <el-button v-if="row.status === 'awaiting_hook' && row.hook_video_url" size="small" type="primary" @click="controlRun(row, 'resume')">继续</el-button>
             <el-button v-if="row.status === 'failed'" size="small" type="warning" @click="retryRun(row)">重试</el-button>
             <el-button size="small" plain @click="openDetail(row)">详情</el-button>
             <el-button size="small" type="success" plain :disabled="row.status !== 'completed'" @click="downloadPackage(row)">下载</el-button>
+            <el-button size="small" type="danger" plain :disabled="row.status !== 'completed'" @click="openUploadDialog(row)">上传YouTube</el-button>
             <el-button size="small" type="info" plain @click="openLog(row)">日志</el-button>
             <el-button size="small" type="danger" plain @click="deleteOne(row)">删除</el-button>
           </template></el-table-column>
@@ -819,6 +858,33 @@ onUnmounted(() => stopPoll());
     <template #footer>
       <el-button @click="hookDialog = false">取消</el-button>
       <el-button type="primary" :loading="uploading" @click="submitHook">上传</el-button>
+    </template>
+  </el-dialog>
+
+  <!-- 上传到 YouTube 弹窗 -->
+  <el-dialog v-model="uploadDialog" title="上传到 YouTube" width="520px">
+    <template v-if="uploadRun">
+      <el-alert :title="`视频：${uploadRun.title || uploadRun.keyword}`" type="info" :closable="false" style="margin-bottom: 14px" />
+      <el-form label-width="100px">
+        <el-form-item label="目标浏览器" required>
+          <el-select v-model="uploadForm.profile" filterable placeholder="选择 AdsPower 环境" style="width: 100%">
+            <el-option v-for="p in uploadProfiles" :key="p.user_id" :label="`${p.serial_number} · ${p.name}（${p.proxy_summary}）`" :value="p.user_id" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="发布模式">
+          <el-select v-model="uploadForm.publish_mode" style="width: 100%">
+            <el-option label="仅存草稿（不发布）" value="draft" />
+            <el-option label="公开" value="public" disabled />
+            <el-option label="不公开" value="unlisted" disabled />
+            <el-option label="私享" value="private" disabled />
+          </el-select>
+          <small style="color:#8a98a8">开发阶段仅支持存草稿，人工核对后再发布</small>
+        </el-form-item>
+      </el-form>
+    </template>
+    <template #footer>
+      <el-button @click="uploadDialog = false">取消</el-button>
+      <el-button type="primary" :loading="uploadSubmitting" @click="submitUpload">创建上传任务</el-button>
     </template>
   </el-dialog>
 

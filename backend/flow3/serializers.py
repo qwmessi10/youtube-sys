@@ -26,8 +26,8 @@ class Flow3AgentSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Flow3Agent
-        # 类型/名称/用途固定，只允许改 prompt 和 enabled。
-        fields = ["id", "agent_type", "agent_type_label", "name", "description", "prompt", "enabled", "updated_at"]
+        # 类型/名称/用途固定，只允许改 prompt、enabled 和 model（使用的文案模型）。
+        fields = ["id", "agent_type", "agent_type_label", "name", "description", "prompt", "model", "enabled", "updated_at"]
         read_only_fields = ["agent_type", "name", "description"]
 
 

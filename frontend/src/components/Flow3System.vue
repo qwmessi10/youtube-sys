@@ -30,6 +30,8 @@ let pollTimer = null;
 // —— Agent ——
 const agents = ref([]);
 const agentLoading = ref(false);
+// 文案 Agent 可选模型清单（来自后端 AI_MODELS；全局设置新增模型即自动出现）。
+const modelOptions = ref([]);
 // Agent 试运行：每个 agent 独立的临时输入与结果（按 agent.id 存）
 const agentRunInput = ref({});   // { [agentId]: {keyword, promo_code, country, repeat} }
 const agentRunResult = ref({});  // { [agentId]: 产出 }
@@ -238,9 +240,19 @@ function stopPoll() {
 }
 
 // ================= Agent =================
+async function loadModelOptions() {
+  try {
+    const { data } = await axios.get("/api/flow3-agents/models/");
+    modelOptions.value = Array.isArray(data.models) ? data.models : [];
+  } catch {
+    modelOptions.value = [];
+  }
+}
 async function loadAgents() {
   agentLoading.value = true;
   try {
+    // 并行拉取 Agent 列表与可选模型清单。
+    await loadModelOptions();
     const { data } = await axios.get("/api/flow3-agents/");
     agents.value = Array.isArray(data) ? data : data.results || [];
   } catch {
@@ -251,7 +263,9 @@ async function loadAgents() {
 }
 async function saveAgent(agent) {
   try {
-    await axios.patch(`/api/flow3-agents/${agent.id}/`, { prompt: agent.prompt, enabled: agent.enabled });
+    await axios.patch(`/api/flow3-agents/${agent.id}/`, {
+      prompt: agent.prompt, enabled: agent.enabled, model: agent.model || "",
+    });
     ElMessage.success(`已保存「${agent.name}」`);
   } catch {
     ElMessage.error("保存失败");
@@ -648,6 +662,14 @@ onUnmounted(() => stopPoll());
             </div>
           </template>
           <el-form label-position="top">
+            <el-form-item label="使用模型">
+              <div class="agent-model-row">
+                <el-select v-model="agent.model" clearable placeholder="默认 gemini-3.8-flash-high" size="default" style="width: 280px" @change="saveAgent(agent)">
+                  <el-option v-for="m in modelOptions" :key="m" :label="m" :value="m" />
+                </el-select>
+                <span class="agent-model-hint">留空则使用全局设置的默认模型；新增模型请在「全局设置」的 AI_MODELS 中添加。生图模型不受影响。</span>
+              </div>
+            </el-form-item>
             <el-form-item label="提示词（Prompt）">
               <el-input v-model="agent.prompt" type="textarea" :autosize="{ minRows: 8, maxRows: 26 }" placeholder="留空则使用系统内置默认提示词" />
             </el-form-item>
@@ -899,6 +921,8 @@ onUnmounted(() => stopPoll());
 .agent-collapse { background: transparent; }
 .agent-title-row { display: flex; align-items: center; gap: 10px; width: 100%; }
 .agent-title-row .agent-card-desc { flex: 1; }
+.agent-model-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.agent-model-hint { font-size: 12px; color: #8a949c; }
 .detail-block { margin-top: 14px; }
 .log-pre { white-space: pre-wrap; word-break: break-word; background: #0f1621; color: #c8d3de; padding: 10px; border-radius: 6px; font-size: 12px; max-height: 300px; overflow: auto; }
 .log-collapse { margin-top: 8px; }

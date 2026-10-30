@@ -30,6 +30,7 @@ from .services import (
     generate_metadata,
     generate_narration_script,
     get_default_agent_prompt,
+    list_text_models,
     probe_duration,
 )
 from .tasks import SEGB_TARGET_SHOT_COUNT, SEGB_TARGET_SHOT_DURATION, continue_flow3_run, process_flow3_run
@@ -60,6 +61,12 @@ class Flow3AgentViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin,
     def default_prompt(self, request, pk=None):
         agent = self.get_object()
         return Response({"prompt": get_default_agent_prompt(agent.agent_type)})
+
+    @action(detail=False, methods=["get"])
+    def models(self, request):
+        """文案 Agent 可选模型清单（来自全局设置 AI_MODELS + 当前默认 AI_MODEL）。
+        前端 Agent 管理的模型下拉从这里动态取，全局设置新增模型即自动出现。"""
+        return Response({"models": list_text_models()})
 
     @action(detail=True, methods=["post"])
     def run_once(self, request, pk=None):

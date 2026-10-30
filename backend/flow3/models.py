@@ -31,6 +31,9 @@ class Flow3Agent(models.Model):
     name = models.CharField(max_length=100)
     description = models.CharField(max_length=255, blank=True)
     prompt = models.TextField(blank=True)  # 留空则运行时回退到代码内默认提示词
+    # 该 Agent 使用的文案模型名（空=回退全局设置 AI_MODEL）。
+    # 可选清单由全局设置 AI_MODELS 维护，对应 apikey 由 AI_MODEL_KEYS 映射。生图模型不受此字段影响。
+    model = models.CharField(max_length=100, blank=True, default="")
     enabled = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)

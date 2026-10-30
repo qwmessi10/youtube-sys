@@ -37,15 +37,54 @@ def get_setting(key, default=""):
     return value if value not in (None, "") else os.getenv(key, default)
 
 
-def _call_ai_stream(messages, timeout=180, max_retries=3):
+def list_text_models():
+    """
+    返回「文案 Agent 可选模型清单」（去重、保序）。
+    真相源：全局设置 AI_MODELS（逗号分隔）；并确保当前全局默认 AI_MODEL 一定在列表里。
+    新增模型只需在全局设置 AI_MODELS 里加一项，Agent 管理下拉会自动出现，无需改代码。
+    """
+    raw = get_setting("AI_MODELS", "")
+    models_list = [m.strip() for m in raw.split(",") if m.strip()]
+    default_model = get_setting("AI_MODEL", "gemini-3.6-flash-medium").strip()
+    if default_model and default_model not in models_list:
+        models_list.insert(0, default_model)
+    # 去重保序
+    seen, result = set(), []
+    for m in models_list:
+        if m not in seen:
+            seen.add(m)
+            result.append(m)
+    return result
+
+
+def _model_api_key(model):
+    """
+    按模型名解析应使用的 apikey。
+    优先查全局设置 AI_MODEL_KEYS（JSON：{"模型名": "apikey"}）里该模型的专属 key，
+    查不到则回退通用 AI_API_KEY。用于「不同模型走不同 key」（如 Claude 用独立 key）。
+    """
+    raw = get_setting("AI_MODEL_KEYS", "")
+    if model and raw:
+        try:
+            mapping = json.loads(raw)
+            key = (mapping.get(model) or "").strip() if isinstance(mapping, dict) else ""
+            if key:
+                return key
+        except (json.JSONDecodeError, TypeError):
+            pass
+    return get_setting("AI_API_KEY")
+
+
+def _call_ai_stream(messages, timeout=180, max_retries=3, model=None):
     """
     调用 moretokens（OpenAI 兼容）聊天接口，强制 stream:true，拼接返回完整文本。
     该平台模型响应较慢（10~30s）且偶发中途断连（SSL EOF / ChunkedEncoding），
     故对「连接类错误」或「拿到空内容」做指数退避重试，提升长链路任务的稳定性。
+    model：本次调用使用的模型名；为空则用全局默认 AI_MODEL。apikey 按模型映射解析（_model_api_key）。
     """
     base_url = get_setting("AI_BASE_URL", "https://moretokens.ai/v1").rstrip("/")
-    api_key = get_setting("AI_API_KEY")
-    model = get_setting("AI_MODEL", "gemini-3.6-flash-medium")
+    model = (model or "").strip() or get_setting("AI_MODEL", "gemini-3.6-flash-medium")
+    api_key = _model_api_key(model)
     if not api_key:
         raise RuntimeError("未配置 AI_API_KEY")
 
@@ -266,6 +305,12 @@ def _get_prompt(agent_type):
     return prompt, agent
 
 
+def _agent_model(agent):
+    """取 Agent 实际使用的文案模型：Agent 自身 model 非空则用之，否则回退全局 AI_MODEL。"""
+    configured = (getattr(agent, "model", "") or "").strip()
+    return configured or get_setting("AI_MODEL", "gemini-3.6-flash-medium")
+
+
 # ===========================================================================
 # 各 Agent 文案生成
 # ===========================================================================
@@ -275,10 +320,11 @@ def generate_hook_prompt(run):
     if prompt is None:
         raise RuntimeError("Hook 视频文案 Agent 已停用")
     full = _inject_globals(prompt, run).replace("[input]", run.keyword).replace("[output]", HOOK_OUTPUT_SPEC)
-    raw = _call_ai_stream([{"role": "user", "content": full}])
+    model = _agent_model(agent)
+    raw = _call_ai_stream([{"role": "user", "content": full}], model=model)
     data = _extract_json(raw)
     video_prompt = (data.get("video_prompt") or "").strip()
-    log = {"model": get_setting("AI_MODEL", "gemini-3.6-flash-medium"), "prompt": full, "raw_output": raw, "parsed": data}
+    log = {"model": model, "prompt": full, "raw_output": raw, "parsed": data}
     return video_prompt, log
 
 
@@ -294,7 +340,8 @@ def generate_narration_script(run, shot_count, shot_duration):
         total_duration=total, narration_word_limit=narration_word_limit,
     )
     full = _inject_globals(prompt, run).replace("[input]", run.keyword).replace("[output]", output_spec)
-    raw = _call_ai_stream([{"role": "user", "content": full}])
+    model = _agent_model(agent)
+    raw = _call_ai_stream([{"role": "user", "content": full}], model=model)
     data = _extract_json(raw)
     shots = data.get("shots") if isinstance(data.get("shots"), list) else []
     normalized = []
@@ -312,7 +359,7 @@ def generate_narration_script(run, shot_count, shot_duration):
             "narration": text,
         })
     result = {"keyword": run.keyword, "total_duration": total, "shots": normalized}
-    log = {"model": get_setting("AI_MODEL", "gemini-3.6-flash-medium"), "prompt": full, "raw_output": raw, "parsed": data}
+    log = {"model": model, "prompt": full, "raw_output": raw, "parsed": data}
     return result, log
 
 
@@ -322,14 +369,15 @@ def generate_metadata(run):
     if prompt is None:
         raise RuntimeError("元数据生成 Agent 已停用")
     full = _inject_globals(prompt, run).replace("[input]", run.keyword).replace("[output]", METADATA_OUTPUT_SPEC)
-    raw = _call_ai_stream([{"role": "user", "content": full}])
+    model = _agent_model(agent)
+    raw = _call_ai_stream([{"role": "user", "content": full}], model=model)
     data = _extract_json(raw)
     result = {
         "title": (data.get("title") or "").strip(),
         "description": (data.get("description") or "").strip(),
         "thumbnail_prompt": (data.get("thumbnail_prompt") or "").strip(),
     }
-    log = {"model": get_setting("AI_MODEL", "gemini-3.6-flash-medium"), "prompt": full, "raw_output": raw, "parsed": data}
+    log = {"model": model, "prompt": full, "raw_output": raw, "parsed": data}
     return result, log
 
 
@@ -339,10 +387,11 @@ def _generate_image_prompt(run, agent_type):
     if prompt is None:
         raise RuntimeError(f"{dict(Flow3Agent.AGENT_TYPE_CHOICES).get(agent_type, agent_type)} 已停用")
     full = _inject_globals(prompt, run).replace("[input]", run.keyword).replace("[output]", IMAGE_OUTPUT_SPEC)
-    raw = _call_ai_stream([{"role": "user", "content": full}])
+    model = _agent_model(agent)
+    raw = _call_ai_stream([{"role": "user", "content": full}], model=model)
     data = _extract_json(raw)
     image_prompt = (data.get("image_prompt") or "").strip()
-    log = {"model": get_setting("AI_MODEL", "gemini-3.6-flash-medium"), "prompt": full, "raw_output": raw, "parsed": data}
+    log = {"model": model, "prompt": full, "raw_output": raw, "parsed": data}
     return image_prompt, log
 
 

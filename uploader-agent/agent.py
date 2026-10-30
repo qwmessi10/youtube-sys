@@ -78,11 +78,27 @@ def process_task(task):
                     upload_log={"steps": result.get("steps", [])})
         print(f"[task {task_id}] 完成（草稿），链接：{result.get('video_url') or '未抓到'}")
     finally:
-        # 6. 关浏览器
+        # 6. 关浏览器（stop 后复核 active，没关成功重试一次，避免浏览器残留）
+        _safe_stop(user_id, task_id)
+
+
+def _safe_stop(user_id, task_id, retries=1):
+    """关闭浏览器并复核：stop 后查 active，仍 Active 则重试，最终仍失败只告警不抛。"""
+    for attempt in range(retries + 1):
         try:
             ads.stop(user_id)
         except Exception as e:
-            print(f"[task {task_id}] 关闭浏览器失败（忽略）：{e}")
+            print(f"[task {task_id}] 关闭浏览器调用失败（第 {attempt + 1} 次）：{e}")
+        # 复核是否真的关了
+        try:
+            if ads.active(user_id).get("status") != "Active":
+                return  # 已关闭
+        except Exception as e:
+            print(f"[task {task_id}] 复核浏览器状态失败：{e}")
+            return  # 查不到状态就不再纠缠，避免卡死
+        if attempt < retries:
+            print(f"[task {task_id}] 浏览器仍在运行，重试关闭…")
+    print(f"[task {task_id}] ⚠️ 浏览器可能未成功关闭（user_id={user_id}），请人工确认 AdsPower")
 
 
 def main():

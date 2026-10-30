@@ -38,6 +38,55 @@ class UploadError(Exception):
     pass
 
 
+# YouTube 限制：标题 ≤100 字符，描述 ≤5000 字符。
+YT_TITLE_MAX = 100
+YT_DESC_MAX = 4900  # 留余量
+
+
+def clean_title(raw):
+    """
+    清洗标题，兜底 flow3 可能产出的脏数据（纯函数，无副作用、无平台依赖）：
+      - 多行/多个候选只取第一条非空行；
+      - 去掉 "1." / "2)" / "①" 之类编号前缀；
+      - 去掉 YT 自动填入的文件名残留（开头的 "video"）；
+      - 砍到 YT 上限内。
+    """
+    if not raw:
+        return ""
+    # 多行只取第一条非空行（兼容 \r\n / \n）
+    first = ""
+    for line in raw.replace("\r\n", "\n").replace("\r", "\n").split("\n"):
+        if line.strip():
+            first = line.strip()
+            break
+    import re
+    # 1) 先剥掉 YT 自动填入的文件名残留 "video"（仅当其后紧跟字母/数字/中文，
+    #    避免误删正常以 "video games" 开头的标题——那种后面是空格，不匹配）。
+    first = re.sub(r"^video(?=[A-Za-z0-9\u4e00-\u9fff])", "", first).strip()
+    # 2) 再去编号前缀（video 残留剥掉后编号才会露出来）：
+    #    - 阿拉伯数字编号必须带分隔符，如 "1. " "2) " "3、"（否则会误删 "1win" 这类数字开头的正常词）；
+    #    - 圈号 ①-⑩ 自带序号语义，后面可直接是空格，分隔符可选。
+    first = re.sub(r"^\s*[0-9]+\s*[\.\)、:：]\s*", "", first)
+    first = re.sub(r"^\s*[①-⑩]\s*[\.\)、:：]?\s*", "", first)
+    return first.strip()[:YT_TITLE_MAX]
+
+
+def clean_description(raw):
+    """
+    清洗描述（纯函数）：剥掉整段被 ``` 代码块围栏包裹的情况，砍到上限。
+    """
+    if not raw:
+        return ""
+    text = raw.strip()
+    # 去掉首尾的 ``` 围栏（可能带语言标识，如 ```text）
+    if text.startswith("```"):
+        nl = text.find("\n")
+        text = text[nl + 1:] if nl != -1 else text[3:]
+    if text.rstrip().endswith("```"):
+        text = text.rstrip()[:-3]
+    return text.strip()[:YT_DESC_MAX]
+
+
 def _first(page_or_frame, selectors, timeout=15000):
     """在候选选择器里返回第一个可见的 locator；都找不到则抛错。"""
     last_err = None
@@ -63,6 +112,48 @@ def _shot(page, work_dir, name):
         return path
     except Exception:
         return ""
+
+
+def _clear_box(page, box):
+    """
+    清空一个 contenteditable 文本框（YT 标题/描述框是 contenteditable div，
+    不是普通 input）。多重手段兜底，跨平台：
+      1) 聚焦后用 ControlOrMeta+a 全选 + Delete（Playwright 跨平台修饰键）；
+      2) 仍非空则再用 selectText() + Delete 兜底。
+    """
+    box.click()
+    page.wait_for_timeout(200)
+    page.keyboard.press("ControlOrMeta+a")
+    page.keyboard.press("Delete")
+    page.wait_for_timeout(200)
+    try:
+        if (box.inner_text() or "").strip():
+            box.select_text()
+            page.keyboard.press("Delete")
+            page.wait_for_timeout(200)
+    except Exception:
+        pass
+
+
+def _fill_box(page, box, text, *, expect_prefix_len=12, retries=2):
+    """
+    可靠填写 contenteditable 文本框：清空 → 输入 → 读回校验前缀 → 不符重试。
+    返回最终读回的文本（用于日志核对）。
+    """
+    want_head = (text or "")[:expect_prefix_len]
+    for _ in range(retries + 1):
+        _clear_box(page, box)
+        if text:
+            box.type(text, delay=8)
+        page.wait_for_timeout(300)
+        try:
+            got = (box.inner_text() or "").strip()
+        except Exception:
+            got = ""
+        # 校验：目标为空则读回也应空；否则读回应以期望前缀开头
+        if (not text and not got) or (text and got[:expect_prefix_len] == want_head):
+            return got
+    return got
 
 
 def upload_to_draft(cdp_endpoint, *, video_path, title, description, cover_path="",
@@ -103,24 +194,27 @@ def upload_to_draft(cdp_endpoint, *, video_path, title, description, cover_path=
             file_input.set_input_files(video_path)
             log("file_selected", f"已选择视频 {Path(video_path).name}")
 
+            # 清洗元数据（兜底 flow3 脏数据：多候选标题 / 编号 / 文件名残留 / ``` 围栏）
+            title = clean_title(title)
+            description = clean_description(description)
+
             # 等上传处理 + 标题框出现
             title_box = _first(page, SEL["title_box"], timeout=120000)
-            page.wait_for_timeout(1500)
+            # 关键：YT 会把文件名（video.mp4 → "video"）自动填进标题框，且是异步填入。
+            # 多等一会儿，确保它填完后我们再清空，否则会出现 "video" + 我们的标题 拼接的脏结果。
+            page.wait_for_timeout(4000)
 
-            # 填标题（先清空 YT 默认填入的文件名）
-            title_box.click()
-            page.keyboard.press("Control+A")
-            page.keyboard.press("Delete")
-            title_box.type(title[:100], delay=10)
-            log("title_filled", f"标题：{title[:60]}", page, "03_title")
+            # 填标题：清空（含 YT 默认文件名）→ 输入 → 读回校验 → 不符重试（跨平台）
+            got_title = _fill_box(page, title_box, title)
+            log("title_filled", f"标题：{got_title[:70]}", page, "03_title")
 
             # 填描述
             if description:
                 try:
                     desc_box = _first(page, SEL["desc_box"], timeout=8000)
-                    desc_box.click()
-                    desc_box.type(description[:4900], delay=2)
-                    log("desc_filled", "描述已填写")
+                    got_desc = _fill_box(page, desc_box, description, expect_prefix_len=10)
+                    ok = "成功" if got_desc.strip() else "读回为空(可能被YT重置)"
+                    log("desc_filled", f"描述已填写({ok})，读回前40：{got_desc[:40]}", page, "035_desc")
                 except UploadError:
                     log("desc_skip", "未找到描述框，跳过")
 

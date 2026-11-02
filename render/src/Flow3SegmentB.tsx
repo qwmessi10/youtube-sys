@@ -10,10 +10,12 @@
  *
  * 时长：segDuration 秒（= TTS 旁白实际总时长），由后端传入并决定本段帧数。
  */
-import React from "react";
+import React, { useEffect } from "react";
 import {
   AbsoluteFill,
   Audio,
+  delayRender,
+  continueRender,
   Freeze,
   Img,
   OffthreadVideo,
@@ -124,6 +126,53 @@ const PromoPanel: React.FC<{ promoCode: string; side: "left" | "right"; variant:
   return <div style={{ ...PANEL_WRAP, [side]: "0%" }}>{variants[idx]}</div>;
 };
 
+// 模糊底图加载包装器：使用 delayRender 正确处理异步加载。
+const BlurBgImage: React.FC<{ src: string }> = ({ src }) => {
+  const [handle] = React.useState(() => delayRender());
+
+  useEffect(() => {
+    if (!src) {
+      continueRender(handle);
+      return;
+    }
+
+    // 创建 Image 对象来预加载图片，超时后也继续渲染（防止无限等待）。
+    const img = new Image();
+    const timeout = setTimeout(() => {
+      continueRender(handle);
+    }, 15000); // 15 秒超时，不再等待
+
+    img.onload = () => {
+      clearTimeout(timeout);
+      continueRender(handle);
+    };
+
+    img.onerror = () => {
+      clearTimeout(timeout);
+      continueRender(handle);
+    };
+
+    img.src = src;
+  }, [src, handle]);
+
+  if (!src) {
+    return null;
+  }
+
+  return (
+    <Img
+      src={src}
+      style={{
+        width: "100%",
+        height: "100%",
+        objectFit: "cover",
+        filter: "blur(28px) brightness(0.6)",
+        transform: "scale(1.1)",
+      }}
+    />
+  );
+};
+
 // 9:16 录屏画中画面板。素材播完冻结最后一帧（配音可能更长）。
 const ScreenPanel: React.FC<{ videoSrc: string; durationSec: number; side: "left" | "right" }> = ({
   videoSrc,
@@ -190,19 +239,10 @@ export const Flow3SegmentB: React.FC<Flow3SegBProps> = ({
   let acc = 0;
   return (
     <AbsoluteFill style={{ backgroundColor: "#111418" }}>
-      {/* 高斯模糊底图铺满 */}
+      {/* 高斯模糊底图铺满 - 使用带加载管理的包装器 */}
       {blurBgSrc ? (
         <AbsoluteFill>
-          <Img
-            src={blurBgSrc}
-            style={{
-              width: "100%",
-              height: "100%",
-              objectFit: "cover",
-              filter: "blur(28px) brightness(0.6)",
-              transform: "scale(1.1)",
-            }}
-          />
+          <BlurBgImage src={blurBgSrc} />
         </AbsoluteFill>
       ) : null}
       {/* 暗化遮罩，提升文字可读性 */}

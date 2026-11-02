@@ -94,6 +94,8 @@ app.post("/render", async (req, res) => {
       inputProps: props,
       // Docker 内 Chromium 建议开多进程，避免单进程渲染卡顿
       chromiumOptions: { enableMultiProcessOnLinux: true },
+      // 增加 delayRender 全局超时到 120 秒（避免视频帧提取超时）
+      timeoutInMilliseconds: 120000,
     });
     console.log(`[render] done ${outPath}`);
     return res.json({ ok: true, outPath, durationInFrames: composition.durationInFrames });

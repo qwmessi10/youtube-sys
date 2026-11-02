@@ -615,11 +615,13 @@ def probe_duration(abs_path):
 # ===========================================================================
 def render_segment_b(*, promo_code, blur_bg_abs, screen_abs, screen_duration,
                      shots, narration_audio, segb_duration, layout_seed,
-                     output_abs_path, promo_variant=0, render_url=None, timeout=1200):
+                     output_abs_path, promo_variant=0, render_url=None, timeout=2400):
     """
     通过 HTTP 调 render 容器的 Remotion 服务渲染 SegB（compositionId=Flow3SegmentB）。
     所有路径用 render 容器可见的共享卷绝对路径（/app/media/...）。
     返回 render 响应 dict（含 durationInFrames）。失败抛异常。
+    
+    超时调整：从 1200s → 2400s（40min），给予充足时间处理图片加载延迟。
     """
     render_url = render_url or get_setting("FLOW3_RENDER_URL",
                                            get_setting("REMOTION_RENDER_URL", "http://render:3000/render"))

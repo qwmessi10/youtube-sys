@@ -30,7 +30,7 @@ class UploadTaskSerializer(serializers.ModelSerializer):
             "video_file", "video_path", "title", "description",
             "cover_file", "cover_path", "publish_mode", "publish_mode_label",
             "status", "status_label", "video_url", "retry_count",
-            "error_message", "upload_log", "created_at", "updated_at", "finished_at",
+            "error_message", "upload_log", "locked_at", "created_at", "updated_at", "finished_at",
         ]
         read_only_fields = [
             "status", "video_url", "retry_count", "error_message",

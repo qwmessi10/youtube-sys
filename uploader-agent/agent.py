@@ -9,6 +9,7 @@ Uploader Agent 主入口（宿主独立进程）。
 import time
 import traceback
 from pathlib import Path
+from urllib.parse import urlsplit, urlunsplit
 
 import config
 import adspower_client as ads
@@ -17,10 +18,22 @@ import youtube_uploader as yt
 
 
 def _cdp_endpoint(start_data):
-    """从 AdsPower start/active 返回里取 CDP endpoint（供 Playwright connect_over_cdp）。"""
+    """从 AdsPower start/active 返回里取 CDP endpoint，并适配 Docker 容器到宿主机的地址转换。"""
     ws = start_data.get("ws") or {}
-    # puppeteer 字段是标准 CDP ws endpoint
-    return ws.get("puppeteer") or ws.get("selenium") or ""
+    endpoint = ws.get("puppeteer") or ws.get("selenium") or ""
+    if not endpoint:
+        return ""
+    # AdsPower 在宿主机返回 ws://127.0.0.1:<port>/...；该 localhost 对 Docker 容器指向容器自身。
+    # 执行器集成到 Docker 后，需要替换为 Docker Desktop 提供的宿主机网关。
+    if config.CDP_HOST_REWRITE:
+        parts = urlsplit(endpoint)
+        host = parts.hostname
+        if host in {"127.0.0.1", "localhost", "::1"}:
+            netloc = config.CDP_HOST_REWRITE
+            if parts.port:
+                netloc = f"{netloc}:{parts.port}"
+            endpoint = urlunsplit((parts.scheme, netloc, parts.path, parts.query, parts.fragment))
+    return endpoint
 
 
 def process_task(task):
@@ -85,9 +98,17 @@ def process_task(task):
 def _safe_stop(user_id, task_id, retries=1):
     """关闭浏览器并复核：stop 后查 active，仍 Active 则重试，最终仍失败只告警不抛。"""
     for attempt in range(retries + 1):
+        # 已被其它操作关闭时直接结束，不再将正常状态当作失败。
+        try:
+            if ads.active(user_id).get("status") != "Active":
+                return
+        except Exception as e:
+            print(f"[task {task_id}] 关闭前检查浏览器状态失败：{e}")
+            return
         try:
             ads.stop(user_id)
         except Exception as e:
+            # AdsPower 在刚关闭后可能返回「User_id is not open」，此时再复核即可。
             print(f"[task {task_id}] 关闭浏览器调用失败（第 {attempt + 1} 次）：{e}")
         # 复核是否真的关了
         try:

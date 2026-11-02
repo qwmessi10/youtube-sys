@@ -52,6 +52,28 @@ services:
       - media_data:/app/media
     # 仅供内网调用，不对外暴露端口
 
+  # AdsPower / YouTube 自动上传执行器：常驻领任务，不需要手动运行 Python。
+  # 通过 host.docker.internal 调宿主 AdsPower；媒体卷共享成品与截图。
+  uploader:
+    build: ./uploader-agent
+    environment:
+      BACKEND_BASE: http://backend:8000
+      ADSPOWER_API_BASE: http://host.docker.internal:50325
+      ADSPOWER_API_KEY: ${ADSPOWER_API_KEY}
+      CDP_HOST_REWRITE: host.docker.internal
+      AGENT_TOKEN: ${UPLOADER_AGENT_TOKEN:-}
+      POLL_INTERVAL: "10"
+      DRAFT_ONLY: "True"
+      WORK_DIR: /app/_work
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - media_data:/app/_work
+    depends_on:
+      backend:
+        condition: service_started
+    restart: unless-stopped
+
   frontend:
     build: ./frontend
     ports:

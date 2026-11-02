@@ -166,6 +166,10 @@ async function createTask() {
   }
 }
 
+async function runTaskNow() {
+  ElMessage.info("任务已在自动上传队列中，系统会在约 10 秒内自动领取执行。请确认 Docker Desktop 与 AdsPower 客户端正在运行。");
+}
+
 async function retryTask(row) {
   try {
     await axios.post(`/api/upload-tasks/${row.id}/retry/`);
@@ -313,7 +317,7 @@ watch(() => props.view, (v) => {
       </el-card>
 
       <el-card shadow="never" class="table-card">
-        <el-alert title="开发阶段任务执行到「草稿已保存」为止，请到对应浏览器的 YouTube Studio 核对后手动发布。" type="warning" :closable="false" class="note" />
+        <el-alert title="任务由系统内置执行器自动串行领取；「排队中」通常会在约 10 秒内开始执行。请保持 Docker Desktop 与 AdsPower 客户端运行。开发阶段执行到「草稿已保存」为止，请到对应浏览器的 YouTube Studio 核对后手动发布。" type="warning" :closable="false" class="note" />
         <el-table :data="tasks" v-loading="taskLoading" size="small" empty-text="暂无任务">
           <el-table-column label="任务 / 标题" min-width="200"><template #default="{ row }"><div>{{ row.name || row.title }}</div><small class="sub">{{ row.source_run_keyword ? `来自内容任务：${row.source_run_keyword}` : "手动创建" }}</small></template></el-table-column>
           <el-table-column label="目标浏览器" min-width="140"><template #default="{ row }">{{ row.profile_serial }} · {{ row.profile_name }}</template></el-table-column>
@@ -322,7 +326,8 @@ watch(() => props.view, (v) => {
           <el-table-column label="创建时间" min-width="160"><template #default="{ row }">{{ datetime(row.created_at) }}</template></el-table-column>
           <el-table-column label="操作" width="230" fixed="right"><template #default="{ row }">
             <el-button size="small" type="info" plain @click="openLog(row)">日志</el-button>
-            <el-button size="small" type="primary" plain :disabled="row.status !== 'failed'" @click="retryTask(row)">重试</el-button>
+          <el-button size="small" type="success" plain :disabled="row.status !== 'queued'" @click="runTaskNow">查看执行条件</el-button>
+          <el-button size="small" type="primary" plain :disabled="row.status !== 'failed'" @click="retryTask(row)">重试</el-button>
             <el-button size="small" type="danger" plain @click="deleteTask(row)">删除</el-button>
           </template></el-table-column>
         </el-table>

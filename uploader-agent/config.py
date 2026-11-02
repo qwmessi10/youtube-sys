@@ -26,7 +26,10 @@ def _bool(v):
 
 BACKEND_BASE = os.getenv("BACKEND_BASE", "http://127.0.0.1:8000").rstrip("/")
 AGENT_TOKEN = os.getenv("AGENT_TOKEN", "")
-ADSPOWER_API_BASE = os.getenv("ADSPOWER_API_BASE", "http://local.adspower.net:50325").rstrip("/")
+# Docker 内通过 host.docker.internal 访问宿主 AdsPower；本机直接运行时默认 127.0.0.1。
+ADSPOWER_API_BASE = os.getenv("ADSPOWER_API_BASE", "http://127.0.0.1:50325").rstrip("/")
+# AdsPower 返回的 CDP endpoint 往往绑定 127.0.0.1；Docker 模式需改写为宿主网关。
+CDP_HOST_REWRITE = os.getenv("CDP_HOST_REWRITE", "").strip()
 ADSPOWER_API_KEY = os.getenv("ADSPOWER_API_KEY", "")
 POLL_INTERVAL = int(os.getenv("POLL_INTERVAL", "10"))
 DRAFT_ONLY = _bool(os.getenv("DRAFT_ONLY", "True"))

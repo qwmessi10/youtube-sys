@@ -1,54 +1,45 @@
 # Uploader Agent（AdsPower → YouTube 自动上传执行器）
 
-宿主独立进程。不进 Docker，直接跑在装了 AdsPower 的 mac 上，通过 HTTP 与 youtube-sys 后端通信。
+> 已集成到主项目的 Docker Compose，服务名为 `uploader`。正常使用时**不需要运行 Python 命令、不需要打开终端**：确保 Docker Desktop 与 AdsPower 客户端正在运行，然后在后台创建任务即可自动上传到草稿。
 
-## 职责
+## 自动运行方式（默认）
 
-轮询后端上传任务队列 → 下载视频/封面 → 调 AdsPower 本地 API 起浏览器 →
-Playwright 接管浏览器在 YouTube Studio 上传 → **保存草稿（开发阶段不发布）** →
-抓草稿链接回填后端 → 关浏览器 → 下一个。
-
-## 安装
+项目启动时会一并启动 `uploader` 服务，它会常驻领取上传任务：
 
 ```bash
-cd uploader-agent
-python3 -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
-playwright install chromium          # 首次需装浏览器驱动（一次性）
-cp .env.example .env                 # 按需改配置
+# 仅供部署或排障时使用；日常后台操作不需要执行这条命令
+# docker compose up -d
 ```
 
-## 配置（.env）
+运行链路：后台创建任务 → `uploader` 自动领取 → 调用宿主机 AdsPower → 接管浏览器 → 上传 YouTube 草稿 → 回填任务链接 → 关闭浏览器。
 
-| 项 | 说明 |
+前置条件：
+
+1. Docker Desktop 正在运行；
+2. AdsPower 客户端正在运行，且本地 API 已开启；
+3. 目标 AdsPower 浏览器环境已登录 YouTube，并正确配置代理；
+4. 项目环境变量 `ADSPOWER_API_KEY` 已配置（首次集成时已写入项目 `.env`）。
+
+如果 AdsPower 客户端关闭，执行器会持续等待；重新打开 AdsPower 后会自动领取后续排队任务。
+
+## 配置说明
+
+| 项 | Docker 集成模式 |
 |----|------|
-| `BACKEND_BASE` | 后端地址，默认 `http://127.0.0.1:8000` |
-| `AGENT_TOKEN` | 执行器回调鉴权 token，需与后端全局设置 `UPLOADER_AGENT_TOKEN` 一致（留空=不校验） |
-| `ADSPOWER_API_BASE` | AdsPower 本地 API，默认 `http://local.adspower.net:50325` |
-| `ADSPOWER_API_KEY` | AdsPower API Key |
-| `POLL_INTERVAL` | 轮询间隔秒数，默认 10 |
-| `DRAFT_ONLY` | `True`=只存草稿不发布（开发阶段强烈建议保持） |
-| `HEADLESS` | 接管真实浏览器，保持 `False` |
+| `BACKEND_BASE` | Compose 内部固定为 `http://backend:8000` |
+| `ADSPOWER_API_BASE` | Compose 内固定为 `http://host.docker.internal:50325`，以访问 macOS 宿主 AdsPower |
+| `ADSPOWER_API_KEY` | 从项目根目录 `.env` 的 `ADSPOWER_API_KEY` 读取 |
+| `CDP_HOST_REWRITE` | Compose 自动设置为 `host.docker.internal`，把 AdsPower 返回的本机 CDP 地址改写为 Docker 可访问的宿主地址 |
+| `AGENT_TOKEN` | 可选执行器回调鉴权；与后端全局设置一致，留空则不校验 |
+| `POLL_INTERVAL` | 默认 10 秒 |
+| `DRAFT_ONLY` | 保持 `True`，只保存草稿不发布 |
 
-## 运行
+## 排障（仅管理员）
+
+执行器日志可用以下方式查看：
 
 ```bash
-source .venv/bin/activate
-python agent.py
+docker compose logs -f uploader
 ```
 
-启动后常驻轮询。前台日志会打印每个任务的进度；每步截图存 `_work/task_<id>/`。
-Ctrl+C 退出。
-
-## 使用流程
-
-1. 确保 AdsPower 客户端在运行、本地 API 已开启、目标浏览器已登录 YouTube。
-2. 在后台「AdsPower 自动化系统 - 任务管理」手动建任务，或在「内容生成 - 任务管理」对已完成任务点「上传YouTube」。
-3. 启动本 Agent，它会领取排队任务并执行到"草稿已保存"。
-4. 到对应浏览器的 YouTube Studio 核对草稿，确认无误后手动发布。
-
-## 注意
-
-- **串行执行**：一次只处理一个任务，符合"一天一个"的节奏。
-- YouTube Studio DOM 常改版，若上传卡住，更新 `youtube_uploader.py` 顶部的 `SEL` 选择器常量。
-- 失败任务在后台可点「重试」重新排队。
+若执行器意外停止，Compose 的 `restart: unless-stopped` 会自动拉起。任务在执行器崩溃或机器休眠后超过默认 30 分钟会自动回到队列，避免永久卡住。

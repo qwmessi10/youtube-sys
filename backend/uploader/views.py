@@ -1,4 +1,5 @@
 import os
+from datetime import timedelta
 
 from django.db import transaction
 from django.utils import timezone
@@ -124,6 +125,25 @@ class UploadTaskViewSet(viewsets.ModelViewSet):
             qs = qs.filter(status=st)
         return qs
 
+    def _recover_stale_claims(self):
+        """把异常退出执行器遗留的领取中任务重新放回队列，避免永久卡在 launching/uploading。"""
+        try:
+            timeout_minutes = max(1, int(services.get_setting("UPLOADER_TASK_LOCK_TIMEOUT_MINUTES", "30") or 30))
+        except (TypeError, ValueError):
+            timeout_minutes = 30
+        deadline = timezone.now() - timedelta(minutes=timeout_minutes)
+        stale = UploadTask.objects.filter(
+            status__in=[UploadTask.STATUS_LAUNCHING, UploadTask.STATUS_UPLOADING],
+            locked_at__lt=deadline,
+        )
+        return stale.update(status=UploadTask.STATUS_QUEUED, locked_at=None)
+
+    @action(detail=False, methods=["post"])
+    def recover_stale(self, request):
+        """人工触发超时任务回收。正常执行器领取 next 时也会自动执行一次。"""
+        recovered = self._recover_stale_claims()
+        return Response({"recovered": recovered})
+
     def create(self, request, *args, **kwargs):
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
@@ -193,6 +213,8 @@ class UploadTaskViewSet(viewsets.ModelViewSet):
         """领取下一个 queued 任务，原子置为 launching（防并发重复领取）。"""
         if not _check_agent_token(request):
             return Response({"detail": "token 无效"}, status=status.HTTP_403_FORBIDDEN)
+        # 先回收因执行器崩溃、网络中断等原因遗留的锁；不会影响仍在时限内的正常任务。
+        self._recover_stale_claims()
         with transaction.atomic():
             task = (UploadTask.objects.select_for_update(skip_locked=True)
                     .filter(status=UploadTask.STATUS_QUEUED).order_by("created_at").first())

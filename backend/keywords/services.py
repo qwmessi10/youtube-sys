@@ -238,6 +238,8 @@ def enrich_videos(serp_videos):
         normalized.append({
             "video_id": raw.get("video_id"),
             "title": snippet.get("title") or raw.get("title", ""),
+            "description": snippet.get("description") or "",
+            "tags": snippet.get("tags") or [],
             "video_url": f"https://www.youtube.com/watch?v={raw['video_id']}" if raw.get("video_id") else "",
             "channel_name": snippet.get("channelTitle") or raw.get("channel", {}).get("name", ""),
             "channel_id": channel_id,

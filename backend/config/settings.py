@@ -19,6 +19,7 @@ INSTALLED_APPS = [
     "flow3",
     "uploader",
     "smm",
+    "analytics",
 ]
 MIDDLEWARE = [
     "corsheaders.middleware.CorsMiddleware",
@@ -87,6 +88,11 @@ CELERY_BEAT_SCHEDULE = {
     },
     "sync-smm-poll-tasks": {
         "task": "smm.tasks.sync_smm_poll_tasks",
+        "schedule": 60.0,
+    },
+    # 数据分析：每 60s 跑一次，任务内部按 ANALYTICS_REFRESH_INTERVAL_MINUTES 判断是否真正刷新。
+    "analytics-scheduled-refresh": {
+        "task": "analytics.tasks.analytics_scheduled_refresh",
         "schedule": 60.0,
     },
 }

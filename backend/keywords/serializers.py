@@ -22,6 +22,7 @@ SETTING_CATEGORIES = [
     ("内容生成", ["TTS_", "ELEVENLABS_", "REMOTION_"]),
     ("AdsPower 自动化", ["ADSPOWER_", "UPLOADER_", "IP2LOCATION_"]),
     ("SMM 面板", ["AUTOLAK_"]),
+    ("数据分析", ["ANALYTICS_"]),
 ]
 
 

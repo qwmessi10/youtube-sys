@@ -5,6 +5,8 @@ import { ElMessage, ElMessageBox } from "element-plus";
 import Flow3System from "./components/Flow3System.vue";
 import AdsPowerSystem from "./components/AdsPowerSystem.vue";
 import SmmPanelSystem from "./components/SmmPanelSystem.vue";
+import HomePage from "./components/HomePage.vue";
+import AnalyticsSystem from "./components/AnalyticsSystem.vue";
 
 // 当前菜单从 localStorage 恢复，刷新后停留在原页面而不是跳回默认。
 const activeMenu = ref(localStorage.getItem("activeMenu") || "tasks");
@@ -46,12 +48,14 @@ const menuTitles = {
   "flow3-tasks": "内容生成 - 任务管理", "flow3-agents": "内容生成 - Agent 管理", "flow3-materials": "内容生成 - 素材库",
   "adspower-browsers": "AdsPower 自动化 - 浏览器管理", "adspower-ips": "AdsPower 自动化 - IP 管理", "adspower-tasks": "AdsPower 自动化 - 任务管理",
   "smm-accounts": "SMM 面板 - 个人中心", "smm-tasks": "SMM 面板 - 任务管理",
+  "analytics-videos": "数据分析 - 视频库", "analytics-competitor": "数据分析 - 竞品 SEO 分析", "analytics-rankings": "数据分析 - 排名追踪",
+  home: "首页",
   settings: "全局设置",
 };
 const menuTitle = computed(() => menuTitles[activeMenu.value] || "关键词系统");
 
 // 全局设置分组展示（后端返回 category 字段，这里按固定顺序分组）
-const settingCategories = ["关键词系统", "AI 模型", "内容生成", "AdsPower 自动化", "SMM 面板", "其他"];
+const settingCategories = ["关键词系统", "AI 模型", "内容生成", "AdsPower 自动化", "SMM 面板", "数据分析", "其他"];
 const settingsByCategory = computed(() => {
   const groups = {};
   for (const cat of settingCategories) groups[cat] = [];
@@ -393,11 +397,18 @@ watch(activeMenu, (menu) => {
         :default-active="activeMenu"
         @select="activeMenu = $event"
         class="menu"
-        :default-openeds="['keywords', 'content', 'adspower', 'smm']"
+        :default-openeds="['keywords', 'content', 'adspower', 'smm', 'analytics']"
         background-color="#17212d"
         text-color="#b6c5d4"
         active-text-color="#ffffff"
       >
+        <el-menu-item index="home">首页</el-menu-item>
+        <el-sub-menu index="analytics">
+          <template #title>数据分析系统</template>
+          <el-menu-item index="analytics-videos">视频库</el-menu-item>
+          <el-menu-item index="analytics-competitor">竞品 SEO 分析</el-menu-item>
+          <el-menu-item index="analytics-rankings">排名追踪</el-menu-item>
+        </el-sub-menu>
         <el-sub-menu index="keywords">
           <template #title>关键词系统</template>
           <el-menu-item index="tasks">任务管理</el-menu-item>
@@ -604,6 +615,11 @@ watch(activeMenu, (menu) => {
         />
         <SmmPanelSystem
           v-else-if="['smm-accounts', 'smm-tasks'].includes(activeMenu)"
+          :view="activeMenu"
+        />
+        <HomePage v-else-if="activeMenu === 'home'" />
+        <AnalyticsSystem
+          v-else-if="['analytics-videos', 'analytics-competitor', 'analytics-rankings'].includes(activeMenu)"
           :view="activeMenu"
         />
         <el-card v-else-if="activeMenu === 'settings'" shadow="never">

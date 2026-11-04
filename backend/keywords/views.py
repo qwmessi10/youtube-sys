@@ -46,6 +46,7 @@ DEFAULT_SETTINGS = [
     ("AUTOLAK_UA", "SMM 面板-请求 User-Agent（直连需带浏览器 UA，否则被 WAF 拦）"),
     ("AUTOLAK_ORIGIN", "SMM 面板-请求 Origin，默认 https://saircaf.autolak.in"),
     ("AUTOLAK_REFERER", "SMM 面板-请求 Referer，默认 https://saircaf.autolak.in/"),
+    ("ANALYTICS_REFRESH_INTERVAL_MINUTES", "数据分析-定时刷新频率（分钟），默认 60。用于视频库指标刷新与排名追踪抓取"),
 ]
 
 SCORE_LABELS = {

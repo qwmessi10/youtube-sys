@@ -1,15 +1,18 @@
 from django.db.models import Q
+from django.utils import timezone
 from rest_framework import mixins, status, viewsets
 from rest_framework.decorators import action
 from rest_framework.pagination import PageNumberPagination
 from rest_framework.response import Response
 
-from .models import SMMAccount, SMMTask
-from .serializers import SMMAccountSerializer, SMMTaskSerializer
+from .models import SMMAccount, SMMPollTask, SMMTask
+from .serializers import SMMAccountSerializer, SMMPollTaskSerializer, SMMTaskSerializer
 from .services import (
     LATEST_CHROME_UA,
+    POLL_END_HOURS,
     get_balance,
     map_panel_status,
+    next_slot_after,
     publish_telegram_auth,
     search_task_record,
     send_task,
@@ -133,10 +136,10 @@ class SMMAccountViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin,
 
 
 class SMMTaskViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin,
-                     mixins.CreateModelMixin, mixins.UpdateModelMixin,
-                     mixins.DestroyModelMixin, viewsets.GenericViewSet):
-    """刷量任务。create 时真实提交到面板；状态/进度用 sync_status 同步。增删改查齐全。"""
-    queryset = SMMTask.objects.select_related("account").all()
+                     mixins.CreateModelMixin, mixins.DestroyModelMixin, viewsets.GenericViewSet):
+    """刷量任务。create 时真实提交到面板，下单后不可编辑（删除仅删本地记录）；状态/进度用 sync_status 同步。"""
+    # 普通任务列表只展示 poll_task 为空的记录；轮询产生的子下单挂在父任务下展示。
+    queryset = SMMTask.objects.select_related("account").filter(poll_task__isnull=True)
     serializer_class = SMMTaskSerializer
     pagination_class = TenPerPagePagination
 
@@ -241,3 +244,103 @@ def sync_task_from_panel(task):
             task.save()
             return True
     return False
+
+
+class SMMPollTaskViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin,
+                         mixins.CreateModelMixin, mixins.DestroyModelMixin, viewsets.GenericViewSet):
+    """轮询刷量任务：创建后由调度器按窗口每小时自动下单，跨天直到刷满轮询次数。"""
+    queryset = SMMPollTask.objects.select_related("account").prefetch_related("children").all()
+    serializer_class = SMMPollTaskSerializer
+    pagination_class = TenPerPagePagination
+
+    def get_queryset(self):
+        qs = super().get_queryset()
+        search = self.request.query_params.get("search", "").strip()
+        if search:
+            qs = qs.filter(
+                Q(key_words__icontains=search) | Q(youtube_link__icontains=search)
+            )
+        return qs
+
+    def create(self, request, *args, **kwargs):
+        account_id = request.data.get("account")
+        youtube_link = (request.data.get("youtube_link") or "").strip()
+        key_words = (request.data.get("key_words") or "").strip()
+        poll_total = request.data.get("poll_total")
+        if not account_id or not youtube_link or not key_words or not poll_total:
+            return Response({"detail": "账号、YouTube 链接、关键词、轮询次数均为必填"},
+                            status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            account = SMMAccount.objects.get(pk=account_id)
+        except SMMAccount.DoesNotExist:
+            return Response({"detail": "账号不存在"}, status=status.HTTP_400_BAD_REQUEST)
+
+        batch_min = int(request.data.get("batch_min", 1) or 1)
+        batch_max = int(request.data.get("batch_max", 5) or 5)
+        if batch_min < 1 or batch_max < batch_min:
+            return Response({"detail": "每批人数区间非法（下限≥1 且上限≥下限）"}, status=status.HTTP_400_BAD_REQUEST)
+
+        window_start = int(request.data.get("window_start_hour", 12) or 12)
+        window_end = int(request.data.get("window_end_hour", 21) or 21)
+        if not (0 <= window_start < 24) or not (0 <= window_end <= 24) or window_end <= window_start:
+            return Response({"detail": "执行时间窗口非法（0-24 且结束>开始）"}, status=status.HTTP_400_BAD_REQUEST)
+
+        initial_count = request.data.get("initial_count") or None
+        per_user = request.data.get("per_user", 2)
+
+        # 先建父任务
+        pt = SMMPollTask.objects.create(
+            account=account,
+            youtube_link=youtube_link,
+            key_words=key_words,
+            per_user=per_user,
+            task_type=int(request.data.get("task_type", 42) or 42),
+            plant_form=int(request.data.get("plant_form", 1) or 1),
+            comment_num=int(request.data.get("comment_num", 1) or 1),
+            initial_count=int(initial_count) if initial_count else None,
+            poll_total=int(poll_total),
+            batch_min=batch_min,
+            batch_max=batch_max,
+            window_start_hour=window_start,
+            window_end_hour=window_end,
+            status=SMMPollTask.STATUS_RUNNING,
+        )
+
+        # 首次刷量：立即下单
+        if initial_count:
+            res = send_task(
+                account.token, account.user_identifier, account.tg_user_id,
+                youtube_link, key_words, int(initial_count),
+                per_user=per_user, comment_num=pt.comment_num,
+                end_hours=POLL_END_HOURS, plant_form=pt.plant_form, task_type=pt.task_type,
+            )
+            if res.get("code") in (0, None):
+                d = res.get("data") or {}
+                SMMTask.objects.create(
+                    account=account, poll_task=pt,
+                    panel_task_id=d.get("taskId") or "", show_id=d.get("showId") or "",
+                    youtube_link=youtube_link, key_words=key_words,
+                    total_user=int(initial_count), per_user=per_user,
+                    task_type=pt.task_type, plant_form=pt.plant_form, comment_num=pt.comment_num,
+                    end_time=d.get("endTime") or "",
+                    cost=int(initial_count) * float(per_user),
+                    status=SMMTask.STATUS_PENDING,
+                )
+
+        # 计算下次执行时间（窗口内下一个整点，北京时间）
+        now = timezone.localtime(timezone.now())
+        pt.next_poll_at = next_slot_after(now, window_start, window_end)
+        pt.save(update_fields=["next_poll_at"])
+
+        return Response(SMMPollTaskSerializer(pt).data, status=status.HTTP_201_CREATED)
+
+    @action(detail=True, methods=["post"])
+    def stop(self, request, pk=None):
+        """停止轮询任务（不撤回已下单）。"""
+        pt = self.get_object()
+        if pt.status != SMMPollTask.STATUS_RUNNING:
+            return Response({"detail": "任务不在运行中"}, status=status.HTTP_400_BAD_REQUEST)
+        pt.status = SMMPollTask.STATUS_STOPPED
+        pt.save(update_fields=["status", "updated_at"])
+        return Response(SMMPollTaskSerializer(pt).data)

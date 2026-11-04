@@ -1,8 +1,17 @@
-"""SMM 面板定时任务：有未完成任务时同步状态/进度，无任务则不做任何事。"""
-from celery import shared_task
+"""SMM 面板定时任务：任务状态同步 + 轮询刷量调度。"""
+import random
 
-from .models import SMMTask
-from .services import map_panel_status, search_task_record
+from celery import shared_task
+from django.utils import timezone
+
+from .models import SMMPollTask, SMMTask
+from .services import (
+    POLL_END_HOURS,
+    map_panel_status,
+    next_slot_after,
+    search_task_record,
+    send_task,
+)
 
 
 @shared_task
@@ -50,3 +59,65 @@ def sync_smm_task_statuses():
             task.save(update_fields=["panel_status", "show_id", "cost", "progress", "status", "updated_at"])
             updated += 1
     return updated
+
+
+@shared_task
+def sync_smm_poll_tasks():
+    """轮询刷量调度：扫描运行中的轮询任务，到点就下一单（随机人数），跨天直到刷满。"""
+    now = timezone.localtime(timezone.now())  # 北京时间
+    running = SMMPollTask.objects.filter(status=SMMPollTask.STATUS_RUNNING).select_related("account")
+    for pt in running:
+        if pt.poll_done >= pt.poll_total:
+            pt.status = SMMPollTask.STATUS_COMPLETED
+            pt.save(update_fields=["status", "updated_at"])
+            continue
+        if pt.next_poll_at is None:
+            pt.next_poll_at = next_slot_after(now, pt.window_start_hour, pt.window_end_hour)
+            pt.save(update_fields=["next_poll_at", "updated_at"])
+            continue
+        if now < pt.next_poll_at:
+            continue  # 还没到点
+
+        # 到点：下一单（随机人数）
+        count = random.randint(pt.batch_min, pt.batch_max)
+        res = send_task(
+            pt.account.token, pt.account.user_identifier, pt.account.tg_user_id,
+            pt.youtube_link, pt.key_words, count,
+            per_user=pt.per_user, comment_num=pt.comment_num,
+            end_hours=POLL_END_HOURS, plant_form=pt.plant_form, task_type=pt.task_type,
+        )
+        if res.get("code") in (0, None):
+            d = res.get("data") or {}
+            SMMTask.objects.create(
+                account=pt.account,
+                poll_task=pt,
+                panel_task_id=d.get("taskId") or "",
+                show_id=d.get("showId") or "",
+                youtube_link=pt.youtube_link,
+                key_words=pt.key_words,
+                total_user=count,
+                per_user=pt.per_user,
+                task_type=pt.task_type,
+                plant_form=pt.plant_form,
+                comment_num=pt.comment_num,
+                end_time=d.get("endTime") or "",
+                cost=count * float(pt.per_user),
+                status=SMMTask.STATUS_PENDING,
+            )
+            pt.poll_done += 1
+            pt.fail_count = 0
+        else:
+            pt.fail_count += 1
+            if pt.fail_count >= 3:
+                pt.status = SMMPollTask.STATUS_FAILED
+                pt.save(update_fields=["status", "fail_count", "updated_at"])
+                continue
+
+        # 推进到下一个窗口内整点（注意转北京时间再算窗口小时）
+        pt.next_poll_at = next_slot_after(
+            timezone.localtime(pt.next_poll_at), pt.window_start_hour, pt.window_end_hour
+        )
+        if pt.poll_done >= pt.poll_total:
+            pt.status = SMMPollTask.STATUS_COMPLETED
+        pt.save()
+    return len(running)

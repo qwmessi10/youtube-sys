@@ -79,9 +79,14 @@ CELERY_TASK_TIME_LIMIT = 600
 CELERY_TASK_ALWAYS_EAGER = os.getenv("CELERY_TASK_ALWAYS_EAGER", "false").lower() == "true"
 
 # SMM 面板：有未完成任务时每 30s 同步一次状态（无任务时任务内部直接返回）。
+# 轮询刷量：每分钟调度一次（到点才下单，未到点直接跳过）。
 CELERY_BEAT_SCHEDULE = {
     "sync-smm-task-statuses": {
         "task": "smm.tasks.sync_smm_task_statuses",
         "schedule": 30.0,
+    },
+    "sync-smm-poll-tasks": {
+        "task": "smm.tasks.sync_smm_poll_tasks",
+        "schedule": 60.0,
     },
 }

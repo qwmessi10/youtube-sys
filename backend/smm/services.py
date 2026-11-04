@@ -15,6 +15,9 @@ from keywords.models import GlobalSetting
 
 IST = timezone(timedelta(hours=5, minutes=30))
 
+# 轮询每次下单的结束时间（小时）：单批 1~5 人很快跑完，2 小时足够且满足最小校验。
+POLL_END_HOURS = 2
+
 # 内置最新 Chrome UA（「一键更新 UA」兜底值，以及 UA 设置被清空时的默认值）。
 LATEST_CHROME_UA = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
@@ -121,3 +124,14 @@ def map_panel_status(panel_status):
     if s in ("failed", "fail", "cancel", "cancelled", "refund", "refunded", "expired"):
         return "failed"
     return "running"
+
+
+def next_slot_after(after_dt, start_hour, end_hour):
+    """返回窗口 [start_hour, end_hour) 内 after_dt 之后的下一个整点（北京时间 aware datetime）。
+
+    用于轮询任务的调度：每个整点刷一次，跳过窗口外时段并跨天。
+    """
+    candidate = (after_dt + timedelta(hours=1)).replace(minute=0, second=0, microsecond=0)
+    while not (start_hour <= candidate.hour < end_hour):
+        candidate += timedelta(hours=1)
+    return candidate

@@ -313,13 +313,13 @@ function togglePollChildren(row) {
 }
 
 watch(() => props.view, (v) => {
-  if (v === "smm-accounts") loadAccounts();
-  else if (v === "smm-tasks") { loadTasks(); loadPollTasks(); }
+  loadAccounts();  // 账号列表个人中心/任务管理都要用，始终加载
+  if (v === "smm-tasks") { loadTasks(); loadPollTasks(); }
 });
 
 onMounted(() => {
-  if (props.view === "smm-accounts") loadAccounts();
-  else { loadTasks(); loadPollTasks(); }
+  loadAccounts();
+  if (props.view === "smm-tasks") { loadTasks(); loadPollTasks(); }
 });
 </script>
 

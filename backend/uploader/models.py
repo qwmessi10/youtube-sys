@@ -38,6 +38,55 @@ class AdsPowerProfile(models.Model):
         return f"{self.name}({self.user_id})"
 
 
+class ProxyConfig(models.Model):
+    """
+    本地 IP / 代理池（IP 管理页数据源）。
+
+    AdsPower 本地 API 没有「全局 IP 资源」概念——代理是直接内嵌在每个环境的
+    user_proxy_config 里的。因此这里维护一份本地可复用的代理清单，用于：
+      - IP 管理页的增删改查；
+      - 新建 / 编辑环境时从下拉里挑一个 IP 直接套用（写进该环境的 user_proxy_config）。
+    """
+    PROXY_TYPE_CHOICES = [
+        ("socks5", "SOCKS5"),
+        ("http", "HTTP"),
+        ("https", "HTTPS"),
+    ]
+
+    name = models.CharField(max_length=128, blank=True)          # 备注名（便于识别，如 "印度-住宅IP"）
+    proxy_type = models.CharField(max_length=16, choices=PROXY_TYPE_CHOICES, default="socks5")
+    proxy_host = models.CharField(max_length=128)                # 代理主机 / IP
+    proxy_port = models.CharField(max_length=16)                 # 端口
+    proxy_user = models.CharField(max_length=255, blank=True)    # 代理账号（可空）
+    proxy_password = models.CharField(max_length=255, blank=True)  # 代理密码（可空）
+    remark = models.TextField(blank=True)
+    source = models.CharField(max_length=16, default="manual")   # manual=手动添加 / adspower=从环境同步
+    # IP2Location 验证结果（验证的是 IP 归属地，不代表代理当前可用）
+    geo_info = models.JSONField(default=dict, blank=True)        # 原始返回（country/region/city 等）
+    verified_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        # 同一 host:port 只存一条，避免重复 IP。
+        unique_together = [("proxy_host", "proxy_port")]
+
+    def __str__(self):
+        return self.name or f"{self.proxy_type} {self.proxy_host}:{self.proxy_port}"
+
+    def to_adspower_config(self):
+        """转换为 AdsPower user_proxy_config 结构（proxy_soft=other 表示自定义代理）。"""
+        return {
+            "proxy_soft": "other",
+            "proxy_type": self.proxy_type,
+            "proxy_host": self.proxy_host,
+            "proxy_port": str(self.proxy_port),
+            "proxy_user": self.proxy_user,
+            "proxy_password": self.proxy_password,
+        }
+
+
 class UploadTask(models.Model):
     """
     一次自动化上传任务。状态机：

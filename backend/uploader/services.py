@@ -119,6 +119,185 @@ def browser_active(user_id):
 
 
 # ===========================================================================
+# 环境增删改（AdsPower 写接口，实测可用）
+# ===========================================================================
+def create_profile(*, group_id, name="", domain_name="", remark="", proxy_config=None, **extra):
+    """
+    POST /api/v1/user/create → {id, serial_number}。
+    group_id 必填；proxy_config 为 user_proxy_config 结构（无代理用 {"proxy_soft":"no_proxy"}）。
+    """
+    body = {
+        "group_id": str(group_id),
+        "user_proxy_config": proxy_config or {"proxy_soft": "no_proxy"},
+    }
+    if name:
+        body["name"] = name
+    if domain_name:
+        body["domain_name"] = domain_name
+    if remark:
+        body["remark"] = remark
+    body.update(extra)
+    return _request("POST", "/api/v1/user/create", json=body)
+
+
+def update_profile(user_id, *, name=None, domain_name=None, remark=None,
+                   group_id=None, proxy_config=None, **extra):
+    """POST /api/v1/user/update，只传需要修改的字段。user_id 必填。"""
+    body = {"user_id": user_id}
+    if name is not None:
+        body["name"] = name
+    if domain_name is not None:
+        body["domain_name"] = domain_name
+    if remark is not None:
+        body["remark"] = remark
+    if group_id is not None:
+        body["group_id"] = str(group_id)
+    if proxy_config is not None:
+        body["user_proxy_config"] = proxy_config
+    body.update(extra)
+    return _request("POST", "/api/v1/user/update", json=body)
+
+
+def delete_profiles(user_ids):
+    """POST /api/v1/user/delete，user_ids 为列表。"""
+    ids = user_ids if isinstance(user_ids, (list, tuple)) else [user_ids]
+    return _request("POST", "/api/v1/user/delete", json={"user_ids": list(ids)})
+
+
+def regroup_profiles(user_ids, group_id):
+    """POST /api/v1/user/regroup，把环境批量移动到目标分组。"""
+    ids = user_ids if isinstance(user_ids, (list, tuple)) else [user_ids]
+    return _request("POST", "/api/v1/user/regroup", json={"user_ids": list(ids), "group_id": str(group_id)})
+
+
+# ===========================================================================
+# 分组增删改（AdsPower 写接口；注意：官方本地 API 不提供删除分组）
+# ===========================================================================
+def create_group(group_name, remark=""):
+    """POST /api/v1/group/create → {group_id, group_name}。"""
+    body = {"group_name": group_name}
+    if remark:
+        body["remark"] = remark
+    return _request("POST", "/api/v1/group/create", json=body)
+
+
+def update_group(group_id, group_name, remark=""):
+    """POST /api/v1/group/update，修改分组名 / 备注。"""
+    body = {"group_id": str(group_id), "group_name": group_name}
+    if remark:
+        body["remark"] = remark
+    return _request("POST", "/api/v1/group/update", json=body)
+
+
+# ===========================================================================
+# IP 归属地验证（IP2Location.io，免 key 额度有限；可在全局设置配 IP2LOCATION_API_KEY）
+# ===========================================================================
+def geolocate_ip(ip):
+    """
+    查询 IP 归属地。返回 IP2Location.io 原始 dict（含 country_name/region_name/city_name）。
+    说明：验证的是 IP 地址的地理归属，不代表代理服务此刻可连通。
+    """
+    params = {"ip": ip}
+    key = get_setting("IP2LOCATION_API_KEY", "")
+    if key:
+        params["key"] = key
+    resp = requests.get("https://api.ip2location.io/", params=params, timeout=15)
+    resp.raise_for_status()
+    data = resp.json()
+    # 免费额度用尽或出错时返回 error 结构
+    if isinstance(data, dict) and data.get("error"):
+        raise AdsPowerError(data["error"].get("error_message") or "IP2Location 查询失败")
+    return data
+
+
+def sync_proxies_from_profiles():
+    """
+    从 AdsPower 环境提取代理，导入 / 更新本地 IP 池（ProxyConfig）。
+    以 (host, port) 去重；soft=no_proxy / 无 host 的跳过。返回 {imported, skipped}。
+    注意：直接用本地 API 的原始返回（含真实账号密码），不读已脱敏的缓存 raw。
+    """
+    from .models import ProxyConfig
+
+    imported, skipped = 0, 0
+    page, page_size = 1, 100
+    while True:
+        data = list_profiles(page=page, page_size=page_size)
+        items = data.get("list") or []
+        if not items:
+            break
+        for item in items:
+            pc = item.get("user_proxy_config") or {}
+            host = pc.get("proxy_host") or ""
+            port = str(pc.get("proxy_port") or "")
+            soft = pc.get("proxy_soft") or ""
+            if not host or soft in ("", "no_proxy"):
+                skipped += 1
+                continue
+            obj, created = ProxyConfig.objects.get_or_create(
+                proxy_host=host, proxy_port=port,
+                defaults={
+                    "proxy_type": pc.get("proxy_type") or "socks5",
+                    "proxy_user": pc.get("proxy_user") or "",
+                    "proxy_password": pc.get("proxy_password") or "",
+                    "source": "adspower",
+                    "name": host,
+                },
+            )
+            if created:
+                imported += 1
+            else:
+                # 已存在：补全真实账号密码（之前脱敏导入可能缺失），不覆盖用户自定义名称。
+                changed = []
+                if pc.get("proxy_user") and obj.proxy_user != pc["proxy_user"]:
+                    obj.proxy_user = pc["proxy_user"]; changed.append("proxy_user")
+                if pc.get("proxy_password") and obj.proxy_password != pc["proxy_password"]:
+                    obj.proxy_password = pc["proxy_password"]; changed.append("proxy_password")
+                if changed:
+                    obj.save(update_fields=changed)
+                skipped += 1
+        if len(items) < page_size:
+            break
+        page += 1
+    return {"imported": imported, "skipped": skipped}
+
+
+def apply_proxy_to_profiles(old_host, old_port, proxy_config):
+    """
+    把某条 IP 的新配置推送到所有"当前使用旧 host:port"的 AdsPower 环境。
+    返回受影响的环境数。用于 IP 池编辑后同步回 AdsPower 客户端。
+    """
+    from .models import AdsPowerProfile
+
+    affected = 0
+    for prof in AdsPowerProfile.objects.all():
+        pc = (prof.raw or {}).get("user_proxy_config") or {}
+        if (pc.get("proxy_host") or "") == old_host and str(pc.get("proxy_port") or "") == str(old_port):
+            update_profile(prof.user_id, proxy_config=proxy_config)
+            affected += 1
+    if affected:
+        sync_profiles()
+    return affected
+
+
+def proxy_usage_map():
+    """
+    计算每条代理被哪些环境使用：返回 { "host:port": [ {user_id, name}, ... ] }。
+    供 IP 管理页标注"已分配/未分配"。
+    """
+    from .models import AdsPowerProfile
+
+    usage = {}
+    for prof in AdsPowerProfile.objects.all():
+        pc = (prof.raw or {}).get("user_proxy_config") or {}
+        host = pc.get("proxy_host") or ""
+        port = str(pc.get("proxy_port") or "")
+        if not host:
+            continue
+        usage.setdefault(f"{host}:{port}", []).append({"user_id": prof.user_id, "name": prof.name})
+    return usage
+
+
+# ===========================================================================
 # 同步：拉全量环境列表 → 写入 AdsPowerProfile 缓存
 # ===========================================================================
 def _proxy_summary(proxy_cfg):

@@ -1,6 +1,59 @@
 from rest_framework import serializers
 
-from .models import AdsPowerProfile, UploadTask
+from .models import AdsPowerProfile, ProxyConfig, UploadTask
+
+
+class ProxyConfigSerializer(serializers.ModelSerializer):
+    """IP / 代理池。账号密码明文返回（便于编辑核对，内部测试项目无脱敏需求）。"""
+    proxy_user = serializers.CharField(required=False, allow_blank=True, default="")
+    proxy_password = serializers.CharField(required=False, allow_blank=True, default="")
+    name = serializers.CharField(required=False, allow_blank=True, default="")
+    password_set = serializers.SerializerMethodField()
+    label = serializers.SerializerMethodField()
+    geo_summary = serializers.SerializerMethodField()
+    assigned_to = serializers.SerializerMethodField()   # 该 IP 被哪些环境使用
+    assigned_count = serializers.SerializerMethodField()
+
+    class Meta:
+        model = ProxyConfig
+        fields = [
+            "id", "name", "proxy_type", "proxy_host", "proxy_port",
+            "proxy_user", "proxy_password", "password_set", "label",
+            "source", "geo_info", "geo_summary", "verified_at",
+            "assigned_to", "assigned_count",
+            "remark", "created_at", "updated_at",
+        ]
+        read_only_fields = ["source", "geo_info", "verified_at"]
+
+    def get_password_set(self, obj):
+        return bool(obj.proxy_password)
+
+    def get_label(self, obj):
+        return str(obj)
+
+    def get_geo_summary(self, obj):
+        g = obj.geo_info or {}
+        if not g:
+            return ""
+        parts = [g.get("country_name") or g.get("country_code"), g.get("region_name"), g.get("city_name")]
+        return " / ".join([p for p in parts if p])
+
+    def get_assigned_to(self, obj):
+        usage = (self.context or {}).get("usage_map") or {}
+        return usage.get(f"{obj.proxy_host}:{obj.proxy_port}", [])
+
+    def get_assigned_count(self, obj):
+        return len(self.get_assigned_to(obj))
+
+    def validate(self, attrs):
+        host = attrs.get("proxy_host") or getattr(self.instance, "proxy_host", "")
+        port = attrs.get("proxy_port") or getattr(self.instance, "proxy_port", "")
+        if not host or not port:
+            raise serializers.ValidationError("代理主机和端口不能为空")
+        # 名称留空时默认用 IP 主机本身；仅在新建、或编辑时清空了名称的情况下回填。
+        if not (attrs.get("name") or "").strip() and host:
+            attrs["name"] = host
+        return attrs
 
 
 class AdsPowerProfileSerializer(serializers.ModelSerializer):
@@ -11,6 +64,18 @@ class AdsPowerProfileSerializer(serializers.ModelSerializer):
             "domain_name", "username", "remark", "ip", "ip_country",
             "proxy_summary", "last_open_time", "raw", "synced_at",
         ]
+
+
+class AdsPowerProfileWriteSerializer(serializers.Serializer):
+    """
+    新建 / 编辑环境的入参校验（不直接落库，由 view 调 AdsPower 写接口后再 sync）。
+    代理来源二选一：proxy_id（引用本地 IP 池）或 proxy_config（直接传结构）；都不传=无代理。
+    """
+    name = serializers.CharField(required=False, allow_blank=True, max_length=255)
+    group_id = serializers.CharField(required=False, allow_blank=True)
+    domain_name = serializers.CharField(required=False, allow_blank=True, max_length=255)
+    remark = serializers.CharField(required=False, allow_blank=True)
+    proxy_id = serializers.IntegerField(required=False, allow_null=True)
 
 
 class UploadTaskSerializer(serializers.ModelSerializer):

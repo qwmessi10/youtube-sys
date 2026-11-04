@@ -129,3 +129,35 @@ onMounted(loadSummary);
     </el-card>
   </div>
 </template>
+
+<style scoped>
+/* —— 顶部指标卡（4 个）—— */
+.metric-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; margin-bottom: 20px; }
+.metric-card { text-align: center; }
+.metric-card :deep(.el-card__body) { padding: 26px 16px; }
+.metric-label { color: #718096; font-size: 13px; margin-bottom: 10px; }
+.metric-value { font-size: 30px; font-weight: 700; color: #18202a; line-height: 1.1; }
+
+/* —— 系统概况卡（5 张）—— */
+.system-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 16px; margin-bottom: 20px; }
+.system-card { border: 1px solid #ebeef5; }
+.system-card-head { display: flex; align-items: center; }
+.system-stats { display: flex; flex-direction: column; gap: 10px; }
+.stat-item { display: flex; align-items: center; justify-content: space-between; }
+.stat-label { color: #718096; font-size: 13px; }
+.stat-value { color: #18202a; font-size: 16px; font-weight: 600; }
+
+/* —— 最近动态 —— */
+.recent-item { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.recent-type { color: #52606d; font-size: 13px; }
+.recent-title { color: #18202a; font-size: 14px; font-weight: 500; }
+
+/* 窄屏自适应：指标卡和系统卡自动换行 */
+@media (max-width: 1400px) {
+  .system-grid { grid-template-columns: repeat(3, 1fr); }
+}
+@media (max-width: 1100px) {
+  .metric-grid { grid-template-columns: repeat(2, 1fr); }
+  .system-grid { grid-template-columns: repeat(2, 1fr); }
+}
+</style>

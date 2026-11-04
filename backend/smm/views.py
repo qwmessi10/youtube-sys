@@ -1,3 +1,5 @@
+import re
+
 from django.db.models import Q
 from django.utils import timezone
 from rest_framework import mixins, status, viewsets
@@ -22,6 +24,19 @@ from keywords.models import GlobalSetting
 # 结束时间最小提前量（小时）。面板按印度时区（比北京时间晚 2.5h），下单是北京时间，
 # 需留足时差与任务运行缓冲，避免任务窗口太短/已过期。
 MIN_END_HOURS = 2
+
+# 人数上限（防止误填超大值导致成本爆表）。
+MAX_TOTAL_USER = 10000
+
+# YouTube 链接格式（youtube.com / youtu.be，可带 http(s):// 与 www./m. 前缀）。
+YOUTUBE_LINK_RE = re.compile(r"^(https?://)?(www\.|m\.)?(youtube\.com|youtu\.be)/", re.IGNORECASE)
+
+
+def clean_keywords(raw):
+    """关键词按 ; 分隔：去首尾空格、去掉空项。返回 (清洗后字符串, 是否含空项)。"""
+    parts = [p.strip() for p in (raw or "").split(";")]
+    cleaned = [p for p in parts if p]
+    return ";".join(cleaned), len(cleaned) != len(parts)
 
 
 class TenPerPagePagination(PageNumberPagination):
@@ -164,6 +179,25 @@ class SMMTaskViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin,
             return Response({"detail": "账号、YouTube 链接、关键词、人数均为必填"},
                             status=status.HTTP_400_BAD_REQUEST)
 
+        if not YOUTUBE_LINK_RE.match(youtube_link):
+            return Response({"detail": "YouTube 链接格式不正确（需 youtube.com 或 youtu.be）"},
+                            status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            total_user_int = int(total_user)
+        except (TypeError, ValueError):
+            return Response({"detail": "人数必须为数字"}, status=status.HTTP_400_BAD_REQUEST)
+        if not (1 <= total_user_int <= MAX_TOTAL_USER):
+            return Response({"detail": f"人数必须在 1~{MAX_TOTAL_USER} 之间"},
+                            status=status.HTTP_400_BAD_REQUEST)
+
+        key_words, has_empty = clean_keywords(key_words)
+        if not key_words:
+            return Response({"detail": "关键词不能为空"}, status=status.HTTP_400_BAD_REQUEST)
+        if has_empty:
+            return Response({"detail": "关键词格式有误：存在空项（多个关键词用 ; 分隔）"},
+                            status=status.HTTP_400_BAD_REQUEST)
+
         try:
             account = SMMAccount.objects.get(pk=account_id)
         except SMMAccount.DoesNotExist:
@@ -182,7 +216,7 @@ class SMMTaskViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin,
 
         res = send_task(
             account.token, account.user_identifier, account.tg_user_id,
-            youtube_link, key_words, int(total_user),
+            youtube_link, key_words, total_user_int,
             per_user=per_user, comment_num=comment_num,
             end_hours=end_hours, plant_form=plant_form, task_type=task_type,
         )
@@ -197,13 +231,13 @@ class SMMTaskViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin,
             show_id=d.get("showId") or "",
             youtube_link=youtube_link,
             key_words=key_words,
-            total_user=int(total_user),
+            total_user=total_user_int,
             per_user=per_user,
             task_type=task_type,
             plant_form=plant_form,
             comment_num=comment_num,
             end_time=d.get("endTime") or "",
-            cost=float(total_user) * float(per_user),
+            cost=total_user_int * float(per_user),
             status=SMMTask.STATUS_PENDING,
             panel_status="",
         )
@@ -271,6 +305,17 @@ class SMMPollTaskViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin,
             return Response({"detail": "账号、YouTube 链接、关键词、轮询次数均为必填"},
                             status=status.HTTP_400_BAD_REQUEST)
 
+        if not YOUTUBE_LINK_RE.match(youtube_link):
+            return Response({"detail": "YouTube 链接格式不正确（需 youtube.com 或 youtu.be）"},
+                            status=status.HTTP_400_BAD_REQUEST)
+
+        key_words, has_empty = clean_keywords(key_words)
+        if not key_words:
+            return Response({"detail": "关键词不能为空"}, status=status.HTTP_400_BAD_REQUEST)
+        if has_empty:
+            return Response({"detail": "关键词格式有误：存在空项（多个关键词用 ; 分隔）"},
+                            status=status.HTTP_400_BAD_REQUEST)
+
         try:
             account = SMMAccount.objects.get(pk=account_id)
         except SMMAccount.DoesNotExist:
@@ -280,6 +325,8 @@ class SMMPollTaskViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin,
         batch_max = int(request.data.get("batch_max", 5) or 5)
         if batch_min < 1 or batch_max < batch_min:
             return Response({"detail": "每批人数区间非法（下限≥1 且上限≥下限）"}, status=status.HTTP_400_BAD_REQUEST)
+        if batch_max > MAX_TOTAL_USER:
+            return Response({"detail": f"每批人数上限不能超过 {MAX_TOTAL_USER}"}, status=status.HTTP_400_BAD_REQUEST)
 
         window_start = int(request.data.get("window_start_hour", 12) or 12)
         window_end = int(request.data.get("window_end_hour", 21) or 21)
@@ -287,6 +334,15 @@ class SMMPollTaskViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin,
             return Response({"detail": "执行时间窗口非法（0-24 且结束>开始）"}, status=status.HTTP_400_BAD_REQUEST)
 
         initial_count = request.data.get("initial_count") or None
+        if initial_count is not None:
+            try:
+                initial_count_int = int(initial_count)
+            except (TypeError, ValueError):
+                return Response({"detail": "首次刷量人数必须为数字"}, status=status.HTTP_400_BAD_REQUEST)
+            if not (1 <= initial_count_int <= MAX_TOTAL_USER):
+                return Response({"detail": f"首次刷量人数必须在 1~{MAX_TOTAL_USER} 之间"},
+                                status=status.HTTP_400_BAD_REQUEST)
+            initial_count = initial_count_int
         per_user = request.data.get("per_user", 2)
 
         # 先建父任务

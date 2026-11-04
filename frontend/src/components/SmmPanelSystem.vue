@@ -53,6 +53,21 @@ function progressText(row) {
   return `${done}/${total}（${p.success_rate || "—"}）`;
 }
 
+const YT_LINK_RE = /^(https?:\/\/)?(www\.|m\.)?(youtube\.com|youtu\.be)\//i;
+
+function isYoutubeLink(link) {
+  return YT_LINK_RE.test((link || "").trim());
+}
+
+// 关键词按 ; 分隔，校验非空与空项，返回错误文案（空串表示通过）
+function validateKeywords(kw) {
+  const parts = (kw || "").split(";").map((s) => s.trim());
+  const cleaned = parts.filter(Boolean);
+  if (!cleaned.length) return "请填写关键词";
+  if (cleaned.length !== parts.length) return "关键词格式有误：存在空项（多个用 ; 分隔）";
+  return "";
+}
+
 // ============ 账号 ============
 async function loadAccounts(page = accountPage.value) {
   accountPage.value = page;
@@ -156,7 +171,9 @@ function openCreateTask() {
 async function saveTask() {
   if (!taskForm.value.account) return ElMessage.warning("请选择所属账号");
   if (!taskForm.value.youtube_link.trim()) return ElMessage.warning("请填写 YouTube 链接");
-  if (!taskForm.value.key_words.trim()) return ElMessage.warning("请填写关键词");
+  if (!isYoutubeLink(taskForm.value.youtube_link)) return ElMessage.warning("YouTube 链接格式不正确（需 youtube.com 或 youtu.be）");
+  const kwErr = validateKeywords(taskForm.value.key_words);
+  if (kwErr) return ElMessage.warning(kwErr);
   if (!taskForm.value.total_user) return ElMessage.warning("请填写刷量人数");
   if (taskForm.value.end_hours < 2) return ElMessage.warning("结束时间必须至少 2 小时后（面板按印度时区，需留足时差）");
   const cost = Number(taskForm.value.total_user) * Number(taskForm.value.per_user);
@@ -292,7 +309,9 @@ function openCreatePollTask() {
 async function savePollTask() {
   if (!pollForm.value.account) return ElMessage.warning("请选择所属账号");
   if (!pollForm.value.youtube_link.trim()) return ElMessage.warning("请填写 YouTube 链接");
-  if (!pollForm.value.key_words.trim()) return ElMessage.warning("请填写关键词");
+  if (!isYoutubeLink(pollForm.value.youtube_link)) return ElMessage.warning("YouTube 链接格式不正确（需 youtube.com 或 youtu.be）");
+  const kwErr = validateKeywords(pollForm.value.key_words);
+  if (kwErr) return ElMessage.warning(kwErr);
   if (!pollForm.value.poll_total || pollForm.value.poll_total < 1) return ElMessage.warning("请填写轮询次数");
   const acc = findAccount(pollForm.value.account);
   if (acc && pollCostRange.value.max > Number(acc.locked_remaining)) {
@@ -459,7 +478,7 @@ onMounted(() => {
         </el-form-item>
         <el-form-item label="YouTube 链接" required><el-input v-model="taskForm.youtube_link" placeholder="https://youtu.be/..." /></el-form-item>
         <el-form-item label="关键词" required><el-input v-model="taskForm.key_words" placeholder="多个用 ; 分隔" /></el-form-item>
-        <el-form-item label="刷量人数" required><el-input-number v-model="taskForm.total_user" :min="1" :step="100" style="width: 100%" /></el-form-item>
+        <el-form-item label="刷量人数" required><el-input-number v-model="taskForm.total_user" :min="1" :max="10000" :step="100" style="width: 100%" /></el-form-item>
         <el-form-item label="每人奖励(₹)"><el-input-number v-model="taskForm.per_user" :min="2" :step="0.1" style="width: 100%" /></el-form-item>
         <el-form-item label="结束时间(小时后)">
           <el-input-number v-model="taskForm.end_hours" :min="2" :max="720" style="width: 100%" />
@@ -527,13 +546,13 @@ onMounted(() => {
             <el-form-item label="YouTube 链接" required><el-input v-model="pollForm.youtube_link" placeholder="https://youtu.be/..." /></el-form-item>
             <el-form-item label="关键词" required><el-input v-model="pollForm.key_words" placeholder="多个用 ; 分隔" /></el-form-item>
             <el-form-item label="每人奖励(₹)"><el-input-number v-model="pollForm.per_user" :min="2" :step="0.1" style="width: 100%" /></el-form-item>
-            <el-form-item label="首次刷量人数"><el-input-number v-model="pollForm.initial_count" :min="1" :step="50" style="width: 100%" placeholder="选填，创建时立即下单" /></el-form-item>
+            <el-form-item label="首次刷量人数"><el-input-number v-model="pollForm.initial_count" :min="1" :max="10000" :step="50" style="width: 100%" placeholder="选填，创建时立即下单" /></el-form-item>
             <el-form-item label="轮询次数" required><el-input-number v-model="pollForm.poll_total" :min="1" style="width: 100%" /></el-form-item>
             <el-form-item label="每批人数区间">
               <div style="display:flex;gap:8px;align-items:center;width:100%">
-                <el-input-number v-model="pollForm.batch_min" :min="1" style="flex:1" />
+                <el-input-number v-model="pollForm.batch_min" :min="1" :max="10000" style="flex:1" />
                 <span>~</span>
-                <el-input-number v-model="pollForm.batch_max" :min="1" style="flex:1" />
+                <el-input-number v-model="pollForm.batch_max" :min="1" :max="10000" style="flex:1" />
               </div>
             </el-form-item>
             <el-form-item label="执行时间窗口(北京)">

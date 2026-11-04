@@ -1,3 +1,4 @@
+import csv
 import io
 import os
 import random
@@ -14,17 +15,19 @@ from rest_framework.pagination import PageNumberPagination
 from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 from rest_framework.response import Response
 
-from .models import Flow3Agent, Flow3Material, Flow3MaterialGroup, Flow3Run
+from .models import Flow3Agent, Flow3Material, Flow3MaterialGroup, Flow3Run, KeywordLibrary
 from .serializers import (
     Flow3AgentSerializer,
     Flow3MaterialGroupSerializer,
     Flow3MaterialSerializer,
     Flow3RunCreateSerializer,
     Flow3RunSerializer,
+    KeywordLibrarySerializer,
 )
 from .prompt_store import export_one
 from .services import (
     _generate_image_prompt,
+    detect_keyword_language,
     generate_hook_prompt,
     generate_image,
     generate_metadata,
@@ -459,3 +462,77 @@ class Flow3MaterialGroupViewSet(viewsets.ModelViewSet):
         group.materials.update(group=default)
         group.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class KeywordLibraryViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin,
+                            mixins.CreateModelMixin, mixins.UpdateModelMixin,
+                            mixins.DestroyModelMixin, viewsets.GenericViewSet):
+    """关键词库（元数据 Agent 描述堆砌的数据源）。支持 CSV 导入、按语言/来源筛选。"""
+    queryset = KeywordLibrary.objects.all()
+    serializer_class = KeywordLibrarySerializer
+    pagination_class = TenPerPagePagination
+    parser_classes = [JSONParser, MultiPartParser, FormParser]
+
+    def get_queryset(self):
+        qs = super().get_queryset()
+        lang = self.request.query_params.get("language", "").strip()
+        if lang:
+            qs = qs.filter(language=lang)
+        source = self.request.query_params.get("source", "").strip()
+        if source:
+            qs = qs.filter(source=source)
+        search = self.request.query_params.get("search", "").strip()
+        if search:
+            qs = qs.filter(keyword__icontains=search)
+        return qs
+
+    def perform_create(self, serializer):
+        """手动新增时自动补语言（若前端未传）。"""
+        keyword = (serializer.validated_data.get("keyword") or "").strip()
+        if keyword and not serializer.validated_data.get("language"):
+            serializer.save(language=detect_keyword_language(keyword))
+        else:
+            serializer.save()
+
+    @action(detail=False, methods=["post"], parser_classes=[MultiPartParser, FormParser])
+    def import_csv(self, request):
+        """
+        导入关键词库 CSV。
+        - source=primary：两列「关键词,搜索量」，第一列关键词、第二列搜索量权重。
+        - source=suggest：两列「序号,长尾关键词」，第二列为长尾词。
+        """
+        source = (request.data.get("source") or "primary").strip()
+        if source not in dict(KeywordLibrary.SOURCE_CHOICES):
+            return Response({"detail": "source 无效（应为 primary 或 suggest）"}, status=status.HTTP_400_BAD_REQUEST)
+        f = request.FILES.get("file")
+        if not f:
+            return Response({"detail": "请选择 CSV 文件"}, status=status.HTTP_400_BAD_REQUEST)
+
+        content = f.read().decode("utf-8-sig", errors="replace")  # utf-8-sig 兼容 BOM
+        rows = list(csv.reader(io.StringIO(content)))
+        created = skipped = 0
+        for row in rows[1:]:  # 跳过表头
+            if not row or not any(c.strip() for c in row):
+                continue
+            if source == KeywordLibrary.SOURCE_PRIMARY:
+                keyword = (row[0] or "").strip()
+                vol_raw = (row[1] or "").strip() if len(row) > 1 else "0"
+                try:
+                    search_volume = int(vol_raw.replace(",", ""))
+                except ValueError:
+                    search_volume = 0
+            else:  # suggest：第二列是长尾词
+                keyword = (row[1] or "").strip() if len(row) > 1 else (row[0] or "").strip()
+                search_volume = 0
+            if not keyword:
+                continue
+            if KeywordLibrary.objects.filter(source=source, keyword=keyword).exists():
+                skipped += 1
+                continue
+            KeywordLibrary.objects.create(
+                keyword=keyword, search_volume=search_volume,
+                language=detect_keyword_language(keyword), source=source,
+            )
+            created += 1
+        return Response({"detail": f"导入完成：新增 {created} 个，跳过 {skipped} 个（重复或空行）。",
+                         "created": created, "skipped": skipped})

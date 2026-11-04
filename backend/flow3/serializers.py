@@ -1,6 +1,6 @@
 from rest_framework import serializers
 
-from .models import Flow3Agent, Flow3Material, Flow3MaterialGroup, Flow3Run
+from .models import Flow3Agent, Flow3Material, Flow3MaterialGroup, Flow3Run, KeywordLibrary
 
 
 class Flow3MaterialGroupSerializer(serializers.ModelSerializer):
@@ -133,3 +133,15 @@ class Flow3RunCreateSerializer(serializers.ModelSerializer):
         if value > 600:
             raise serializers.ValidationError("总时长最多 600 秒。")
         return value
+
+
+class KeywordLibrarySerializer(serializers.ModelSerializer):
+    source_label = serializers.CharField(source="get_source_display", read_only=True)
+    language_label = serializers.CharField(source="get_language_display", read_only=True)
+
+    class Meta:
+        model = KeywordLibrary
+        fields = [
+            "id", "keyword", "search_volume", "language", "language_label",
+            "source", "source_label", "enabled", "created_at", "updated_at",
+        ]

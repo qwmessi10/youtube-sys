@@ -5,6 +5,7 @@ from .views import (
     Flow3MaterialGroupViewSet,
     Flow3MaterialViewSet,
     Flow3RunViewSet,
+    KeywordLibraryViewSet,
 )
 
 router = DefaultRouter()
@@ -12,5 +13,6 @@ router.register("flow3-agents", Flow3AgentViewSet, basename="flow3-agents")
 router.register("flow3-materials", Flow3MaterialViewSet, basename="flow3-materials")
 router.register("flow3-material-groups", Flow3MaterialGroupViewSet, basename="flow3-material-groups")
 router.register("flow3-runs", Flow3RunViewSet, basename="flow3-runs")
+router.register("flow3-keywords", KeywordLibraryViewSet, basename="flow3-keywords")
 
 urlpatterns = router.urls

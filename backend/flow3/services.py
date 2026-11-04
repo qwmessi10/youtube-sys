@@ -254,50 +254,122 @@ DEFAULT_TAIL_IMAGE_PROMPT = """# 角色
 IMAGE_OUTPUT_SPEC = """严格只输出一个 JSON 对象，不要输出任何解释文字或 markdown 代码块标记，格式如下：
 {"image_prompt": "用于图片生成模型的英文提示词"}"""
 
+
+# ===========================================================================
+# 元数据 Agent 语言与关键词库支持（描述按任务 language 生成 + 堆砌关键词库）
+# ===========================================================================
+def detect_keyword_language(keyword):
+    """按关键词的语言特征自动分类：西里尔→ru，天城文→hi，葡/西语特殊字符→pt，其余→en。"""
+    if not keyword:
+        return "en"
+    if re.search(r"[\u0400-\u04FF]", keyword):     # 西里尔字母（俄语等）
+        return "ru"
+    if re.search(r"[\u0900-\u097F]", keyword):     # 天城文（印地语）
+        return "hi"
+    if re.search(r"[éáâãçõóíúêàü]", keyword, re.IGNORECASE):  # 葡/西语特殊字符
+        return "pt"
+    return "en"
+
+
+# language 代码 → 人类可读语言名（传给元数据 Agent，让它按对应语言写标题/描述）
+LANGUAGE_DISPLAY = {
+    "en-IN": "印地英语（Hinglish：英语为主，自然带印度口语/常用词）",
+    "en": "英语",
+    "pt-BR": "巴西葡萄牙语",
+    "pt": "葡萄牙语",
+    "es": "西班牙语",
+    "hi": "印地语",
+    "ru": "俄语",
+    "de": "德语",
+    "fr": "法语",
+    "it": "意大利语",
+    "ja": "日语",
+    "ko": "韩语",
+    "ar": "阿拉伯语",
+}
+
+# language 代码 → 关键词库语言标签（决定堆砌哪类关键词）
+LANGUAGE_KEY_MAP = {
+    "en-IN": "en", "en": "en",
+    "pt-BR": "pt", "pt": "pt",
+    "es": "es", "hi": "hi", "ru": "ru",
+}
+
+
+def language_display(language):
+    """返回 language 的人类可读名；未登记回退原始代码。"""
+    return LANGUAGE_DISPLAY.get((language or "").strip(), (language or "").strip())
+
+
+def keyword_lang_key(language):
+    """返回 language 对应的关键词库语言标签。"""
+    return LANGUAGE_KEY_MAP.get((language or "").strip(), "en")
+
+
+def build_keyword_context(language):
+    """
+    按任务语言筛关键词库，生成注入元数据 Agent 的文本。
+    主词库按搜索量降序（标注权重，要求尽量多写入）；长尾词随机打乱（字符有余量时补）。
+    """
+    from .models import KeywordLibrary
+    key = keyword_lang_key(language)
+    primary = list(KeywordLibrary.objects.filter(
+        source=KeywordLibrary.SOURCE_PRIMARY, language=key, enabled=True,
+    ).order_by("-search_volume", "id"))
+    suggest = list(KeywordLibrary.objects.filter(
+        source=KeywordLibrary.SOURCE_SUGGEST, language=key, enabled=True,
+    ).order_by("?"))
+    lines = []
+    if primary:
+        lines.append("主关键词库（按搜索量从大到小，务必尽可能多、自然地写入描述）：")
+        lines.extend(f"- {k.keyword}（搜索量 {k.search_volume}）" for k in primary)
+    if suggest:
+        lines.append("补充长尾词（描述字符还有余量时随机取用，增强长尾覆盖）：")
+        lines.extend(f"- {k.keyword}" for k in suggest)
+    return "\n".join(lines)
+
+
 DEFAULT_METADATA_PROMPT = """# 角色
-你是一位专注于推广/优惠码内容的 YouTube 营销专家，集 SEO 文案撰稿人与封面图提示词专家于一体。针对特定产品及其目标关键词，你一次性产出一整套可直接使用的视频元数据：高点击率（CTR）标题、关键词优化的视频描述、以及可直接粘贴至图像生成工具的封面图提示词。
+你是一位深耕南亚（印度为主）市场的 YouTube 博彩/优惠码类视频营销专家，同时精通 SEO 文案与高点击封面设计。你针对一个博彩平台（如 1win）及其目标关键词，一次性产出可直接使用的视频元数据：高点击标题、SEO 拉满的视频描述、以及让人忍不住点击的封面图提示词。
 
-# 附加信息
-- 关键词（KEYWORDS）：目标关键词列表，按搜索量从大到小排列（见下方「输入」的关键词，以逗号分隔）。列表第一个词为「主词」。
-- 优惠码（PROMO_CODE）：{PROMO_CODE}
-- 语言（LANGUAGE）：标题与描述的输出语言，默认印地英语（Hinglish）。
-- 封面画幅（ASPECT）：默认 16:9。
-- 封面是否出现人物（WITH_PEOPLE）：默认否（无人物）。
-- 目标受众（AUDIENCE）：默认南亚/印度。
+# 输入信息
+- 主关键词：[input]（标题和描述都必须围绕它）
+- 优惠码：{PROMO_CODE}（CTA 和封面要体现）
+- 输出语言：[language]（标题、描述必须用这种语言写，是当地语言而非国际简写）
+- 关键词库：[keywords]（按搜索量从大到小排列，用于描述堆砌，增强 SEO）
 
-# 内容要求
-## 标题（对应输出 JSON 的 title 字段）
-- 只产出 1 个最终标题（不要编号列表、不要多个候选），长度严格 ≤ 70 个字符。
-- 将主词（关键词列表第一个词）置于标题开头，并且必须自然包含列表中另一个关键词。
-- 包含当前年份（见「通用规则」），最多使用 1 个表情符号（Emoji），并加入体现优势或可信度的短语（如「亲测有效」「分步教程」「超值奖励」「Working Code」等）。
+# 标题（对应 JSON 的 title 字段）
+- 只产出 1 个最终标题，长度 ≤ 70 字符。
+- 主关键词 [input] 必须放在标题最开头。
+- 再自然融入关键词库里另一个高搜索量词。
+- 加入「点击钩子」：具体数字（奖金倍数/金额，如 +500%、₹50,000）、紧迫感、利益点，或 1 个 emoji。
+- 用 [language] 语言写，口语化、有煽动力，像当地博主而非官方公告。
 
-## 视频描述（对应输出 JSON 的 description 字段）
-- 该字段为纯文本字符串，用换行符 \\n 分段；禁止使用 markdown 代码块标记（不要出现 ```），禁止使用表格。
-- 开篇一行引人入胜的文案，包含主词及主要优势。
-- 一段 2-3 句的文字，自然融入 3-4 个关键词（避免关键词堆砌）。
-- 一个「✅」优势列表（4-5 个要点），其中需展示优惠码 PROMO_CODE，并确保每个关键词至少出现一次。
-- 带时间戳的章节列表（从 0:00 的「简介/Intro」开始，按主题划分 4-5 个逻辑板块）。
-- 清晰的行动号召（CTA）板块，包含优惠码 PROMO_CODE 和推广链接占位 AFFILIATE_LINK。
-- 末尾一行标签（Hashtag）：将每个关键词转换为 #驼峰命名法 或无空格标签，数量与关键词一致。
-- 重要：所有关键词必须出现在描述中。
+# 视频描述（对应 JSON 的 description 字段）
+- 纯文本，用 \\n 换行，禁止 ``` 和表格。总长目标 3000~4000 字符，绝不能写短（SEO 需要足够内容量，短描述会丢失大量关键词覆盖）。
+- 严格按下面 6 段结构输出：
+  1. 首段（钩子，1-2 句）：必须含主关键词 [input] + 最核心利益点，抓眼球。
+  2. 正文段（2-3 句）：自然介绍产品/玩法/优惠，自然融入 3-4 个高搜索量关键词（不要生硬）。
+  3. 章节（5-6 个，带时间戳从 0:00 开始）：每个章节标题都要含至少一个关键词，如「0:00 1win Registration 教程」。
+  4. 关键词堆砌区（占描述最大篇幅）：把关键词库里高搜索量的词逐个用自然叙述的方式铺进去，能写多少写多少（这是 SEO 关键）。搜索量大的词优先，其余按顺序尽量全部覆盖，组成连贯的长段落，不要偷懒只写几个。
+  5. CTA 区：明确的行动号召，含优惠码 {PROMO_CODE} 和推广链接占位 AFFILIATE_LINK。
+  6. 标签行：从关键词库里挑词转成 #Hashtag（无空格），至少 15 个。
+- 关键词库里的高搜索量词必须全部出现；长尾词尽量覆盖。
 
-## 封面图提示词（对应输出 JSON 的 thumbnail_prompt 字段）
-- 一段连续的英文提示词（单段，不分行、不用表格、不用多层缩进），依次覆盖：
-  1. 画幅与整体定位（如 16:9, clean corporate and official design, no people）。
-  2. 主体：手机展示产品 app 界面（注册/奖励页、带微光的优惠码字段）。
-  3. 背景：深色蓝调渐变 + 几何光效 + 克制金色粒子。
-  4. 文字叠加：主词大字（白色无衬线）+ 优惠码 PROMO_CODE（金色高亮框）。
-  5. 配色与质感：蓝金品牌点缀、柔和影棚光、高对比、锐利、premium fintech 质感。
-- 封面风格基准（除非另有指定）：官方/商务/可信/现代；极简专业、留白克制；深蓝渐变背景 + 蓝金品牌色；premium fintech 高端金融科技风，柔光、高对比、锐利对焦；白色无衬线主标题 + 金色优惠码高亮框，小尺寸下仍清晰；默认无人物。
+# 封面图提示词（对应 JSON 的 thumbnail_prompt 字段）
+- 一段连续英文提示词，核心目标只有一个：让人忍不住点进来。
+- 风格：博彩推广的「高点击」风，绝不是官方商务冷谈风。
+  - 超大醒目的奖金/金额数字（如 +500% BONUS、₹50,000），用最抢眼的字体色。
+  - 鲜艳撞色（红金 / 黄黑 / 蓝金），高对比、高饱和。
+  - 元素：手机屏幕 + 现金/金币/筹码/钞票 + 兴奋的人物表情或手势（可带人物）。
+  - 主关键词大字 + 优惠码 {PROMO_CODE} 用金色高亮框，缩略图小尺寸也要一眼看清。
+  - 氛围：兴奋、赚钱、发财、抓紧机会，符合印度博彩用户审美。
+- 末尾加修饰词：bold vibrant, eye-catching, high contrast, realistic, 8k。
 
 # 通用规则
-- 自然植入关键词，优先可读性而非关键词密度。
-- 描述与标签须包含所有关键词；封面文字须包含主词与优惠码 PROMO_CODE，确保缩略图小尺寸下可读。
-- 涉及年份时，按今年为 2027 年执行。
-
-# 输入
-关键词：[input]
-优惠码：{PROMO_CODE}
+- 标题和描述用 [language] 语言写；关键词堆砌区的关键词保留原词（关键词本身是什么语言就写什么）。
+- 涉及年份时按 2027 年执行。
+- 优先可读性和点击率，其次才是关键词覆盖。
 
 # 输出
 [output]"""
@@ -404,7 +476,13 @@ def generate_metadata(run):
     prompt, agent = _get_prompt(Flow3Agent.AGENT_METADATA)
     if prompt is None:
         raise RuntimeError("元数据生成 Agent 已停用")
-    full = _inject_globals(prompt, run).replace("[input]", run.keyword).replace("[output]", METADATA_OUTPUT_SPEC)
+    keywords_context = build_keyword_context(run.language)
+    lang_name = language_display(run.language)
+    full = _inject_globals(prompt, run)
+    full = (full.replace("[input]", run.keyword)
+                .replace("[keywords]", keywords_context)
+                .replace("[language]", lang_name)
+                .replace("[output]", METADATA_OUTPUT_SPEC))
     model = _agent_model(agent)
     raw = _call_ai_stream([{"role": "user", "content": full}], model=model)
     data = _extract_json(raw)

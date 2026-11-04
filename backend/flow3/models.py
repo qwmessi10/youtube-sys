@@ -189,3 +189,49 @@ class Flow3Run(models.Model):
 
     def __str__(self):
         return self.name or f"流程3任务 #{self.pk}"
+
+
+class KeywordLibrary(models.Model):
+    """
+    关键词库（元数据 Agent 的描述堆砌数据源）。
+    来源：primary=主词库（带搜索量权重，优先堆砌）；suggest=长尾词（描述字符不够时随机补）。
+    language 为关键词自身语言（en/pt/ru/hi/es...），元数据生成时按任务 language 筛选。
+    """
+
+    SOURCE_PRIMARY = "primary"
+    SOURCE_SUGGEST = "suggest"
+    SOURCE_CHOICES = [
+        (SOURCE_PRIMARY, "主词库（带权重）"),
+        (SOURCE_SUGGEST, "长尾词"),
+    ]
+
+    LANG_EN = "en"
+    LANG_PT = "pt"
+    LANG_RU = "ru"
+    LANG_HI = "hi"
+    LANG_ES = "es"
+    LANG_OTHER = "other"
+    LANG_CHOICES = [
+        (LANG_EN, "英语"),
+        (LANG_PT, "葡萄牙语"),
+        (LANG_RU, "俄语"),
+        (LANG_HI, "印地语"),
+        (LANG_ES, "西班牙语"),
+        (LANG_OTHER, "其他"),
+    ]
+
+    keyword = models.CharField(max_length=255, verbose_name="关键词")
+    search_volume = models.IntegerField(default=0, verbose_name="搜索量（权重）")
+    language = models.CharField(max_length=16, choices=LANG_CHOICES, default=LANG_EN, verbose_name="语言")
+    source = models.CharField(max_length=16, choices=SOURCE_CHOICES, default=SOURCE_PRIMARY, verbose_name="来源")
+    enabled = models.BooleanField(default=True, verbose_name="启用")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-search_volume", "id"]
+        verbose_name = "关键词库"
+        verbose_name_plural = "关键词库"
+
+    def __str__(self):
+        return f"{self.keyword} ({self.search_volume})"

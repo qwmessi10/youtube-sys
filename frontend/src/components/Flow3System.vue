@@ -22,9 +22,26 @@ const selectedIds = ref([]);
 const creating = ref(false);
 const form = ref({
   name: "", keyword: "", total_duration: 240, promo_code: "",
-  country: "IN", language: "en-IN",
+  language: "en-IN",
   hook_material: null, screen_material: null, hook_group: null, count: 1,
 });
+
+// 语言下拉选项（对应后端语言映射；元数据 Agent 按此生成标题/描述语言）
+const languageOptions = [
+  { value: "en-IN", label: "印地英语 (Hinglish)" },
+  { value: "en", label: "英语" },
+  { value: "pt-BR", label: "巴西葡萄牙语" },
+  { value: "pt", label: "葡萄牙语" },
+  { value: "es", label: "西班牙语" },
+  { value: "hi", label: "印地语" },
+  { value: "ru", label: "俄语" },
+  { value: "de", label: "德语" },
+  { value: "fr", label: "法语" },
+  { value: "it", label: "意大利语" },
+  { value: "ja", label: "日语" },
+  { value: "ko", label: "韩语" },
+  { value: "ar", label: "阿拉伯语" },
+];
 let pollTimer = null;
 
 // —— Agent ——
@@ -112,7 +129,7 @@ async function openCreate() {
   await loadGroups();
   const def = groups.value.find((g) => g.is_default) || groups.value[0];
   form.value = { name: "", keyword: "", total_duration: 240, promo_code: "",
-    country: "IN", language: "en-IN",
+    language: "en-IN",
     hook_material: null, screen_material: null,
     hook_group: def ? def.id : null, count: 1 };
   loadHookOptions();   // hook 素材下拉
@@ -544,7 +561,7 @@ async function bulkRetry() {
 // ================= Agent 试运行 =================
 function agentInput(id) {
   if (!agentRunInput.value[id]) {
-    agentRunInput.value[id] = { keyword: "", promo_code: "", country: "IN", repeat: 1 };
+    agentRunInput.value[id] = { keyword: "", promo_code: "", language: "en-IN", repeat: 1 };
   }
   return agentRunInput.value[id];
 }
@@ -568,11 +585,131 @@ function copyText(t) {
   navigator.clipboard?.writeText(t).then(() => ElMessage.success("已复制"), () => {});
 }
 
+// ================= 关键词库 =================
+const keywords = ref([]);
+const kwTotal = ref(0);
+const kwPage = ref(1);
+const kwLoading = ref(false);
+const kwFilter = ref({ language: "", source: "", search: "" });
+const kwImportDialog = ref(false);
+const kwImportSource = ref("primary");
+const kwImportFile = ref(null);
+const kwImporting = ref(false);
+const kwAddDialog = ref(false);
+const kwSaving = ref(false);
+const kwForm = ref({ keyword: "", search_volume: 0, language: "en", source: "primary" });
+
+const kwLangOptions = [
+  { value: "en", label: "英语" }, { value: "pt", label: "葡萄牙语" },
+  { value: "ru", label: "俄语" }, { value: "hi", label: "印地语" },
+  { value: "es", label: "西班牙语" }, { value: "other", label: "其他" },
+];
+const kwSourceOptions = [
+  { value: "primary", label: "主词库（带权重）" }, { value: "suggest", label: "长尾词" },
+];
+const kwLangLabel = (l) => kwLangOptions.find((x) => x.value === l)?.label || l;
+const kwSourceLabel = (s) => kwSourceOptions.find((x) => x.value === s)?.label || s;
+
+async function loadKeywords(page = kwPage.value) {
+  kwPage.value = page;
+  kwLoading.value = true;
+  try {
+    const params = { page };
+    if (kwFilter.value.language) params.language = kwFilter.value.language;
+    if (kwFilter.value.source) params.source = kwFilter.value.source;
+    if (kwFilter.value.search) params.search = kwFilter.value.search;
+    const { data } = await axios.get("/api/flow3-keywords/", { params });
+    keywords.value = data.results;
+    kwTotal.value = data.count;
+  } catch {
+    ElMessage.error("加载关键词库失败");
+  } finally {
+    kwLoading.value = false;
+  }
+}
+
+function openKwImport() {
+  kwImportSource.value = "primary";
+  kwImportFile.value = null;
+  kwImportDialog.value = true;
+}
+
+function onKwFileChange(f) {
+  kwImportFile.value = f?.raw || f;
+}
+
+async function doKwImport() {
+  if (!kwImportFile.value) return ElMessage.warning("请选择 CSV 文件");
+  kwImporting.value = true;
+  try {
+    const fd = new FormData();
+    fd.append("source", kwImportSource.value);
+    fd.append("file", kwImportFile.value);
+    const { data } = await axios.post("/api/flow3-keywords/import_csv/", fd);
+    ElMessage.success(data.detail || "导入完成");
+    kwImportDialog.value = false;
+    await loadKeywords(1);
+  } catch (e) {
+    ElMessage.error(e.response?.data?.detail || "导入失败");
+  } finally {
+    kwImporting.value = false;
+  }
+}
+
+function openKwAdd() {
+  kwForm.value = { keyword: "", search_volume: 0, language: "en", source: "primary" };
+  kwAddDialog.value = true;
+}
+
+async function saveKeyword() {
+  if (!kwForm.value.keyword.trim()) return ElMessage.warning("请填写关键词");
+  kwSaving.value = true;
+  try {
+    await axios.post("/api/flow3-keywords/", kwForm.value);
+    ElMessage.success("已添加");
+    kwAddDialog.value = false;
+    await loadKeywords();
+  } catch (e) {
+    ElMessage.error(e.response?.data?.detail || "添加失败");
+  } finally {
+    kwSaving.value = false;
+  }
+}
+
+async function toggleKeyword(row) {
+  try {
+    await axios.patch(`/api/flow3-keywords/${row.id}/`, { enabled: row.enabled });
+  } catch {
+    ElMessage.error("更新失败");
+  }
+}
+
+async function changeKwLanguage(row, lang) {
+  try {
+    await axios.patch(`/api/flow3-keywords/${row.id}/`, { language: lang });
+    ElMessage.success("语言已更新");
+  } catch {
+    ElMessage.error("更新失败");
+  }
+}
+
+async function deleteKeyword(row) {
+  try {
+    await ElMessageBox.confirm(`确定删除关键词「${row.keyword}」？`, "确认删除", { type: "warning" });
+    await axios.delete(`/api/flow3-keywords/${row.id}/`);
+    ElMessage.success("已删除");
+    await loadKeywords();
+  } catch (e) {
+    if (e !== "cancel") ElMessage.error("删除失败");
+  }
+}
+
 // 首次 + 切换 view 时按需加载
 function loadForView(v) {
   if (v === "flow3-tasks") { taskMode.value = "list"; loadRuns(1); loadGroups(); }
   else if (v === "flow3-agents") loadAgents();
   else if (v === "flow3-materials") { loadGroups(); loadMaterials(); }
+  else if (v === "flow3-keywords") loadKeywords(1);
 }
 onMounted(() => loadForView(props.view));
 watch(() => props.view, (v) => { stopPoll(); loadForView(v); });
@@ -645,8 +782,11 @@ onUnmounted(() => stopPoll());
           <el-form-item label="关键词" required><el-input v-model="form.keyword" placeholder="仅 1 个，如 1xbet promo code" /></el-form-item>
           <el-form-item label="优惠码"><el-input v-model="form.promo_code" placeholder="如 ZH567" /></el-form-item>
           <el-form-item label="总时长(秒)"><el-input-number v-model="form.total_duration" :min="30" :max="600" :step="10" /></el-form-item>
-          <el-form-item label="国家"><el-input v-model="form.country" style="width: 160px" /></el-form-item>
-          <el-form-item label="语言"><el-input v-model="form.language" style="width: 160px" placeholder="en-IN" /></el-form-item>
+          <el-form-item label="语言">
+            <el-select v-model="form.language" filterable style="width: 220px">
+              <el-option v-for="l in languageOptions" :key="l.value" :label="l.label" :value="l.value" />
+            </el-select>
+          </el-form-item>
           <el-form-item label="录屏素材">
             <el-select v-model="form.screen_material" clearable filterable placeholder="不选=随机取一个启用的录屏" style="width: 360px">
               <el-option v-for="s in screenMaterials" :key="s.id" :label="s.name || ('录屏#'+s.id)" :value="s.id" />
@@ -722,7 +862,9 @@ onUnmounted(() => stopPoll());
             <div class="agent-run-inputs">
               <el-input v-model="agentInput(agent.id).keyword" size="small" placeholder="关键词（必填）" style="width: 220px" />
               <el-input v-model="agentInput(agent.id).promo_code" size="small" placeholder="优惠码" style="width: 130px" />
-              <el-input v-model="agentInput(agent.id).country" size="small" placeholder="国家" style="width: 90px" />
+              <el-select v-model="agentInput(agent.id).language" size="small" filterable placeholder="语言" style="width: 150px">
+                <el-option v-for="l in languageOptions" :key="l.value" :label="l.label" :value="l.value" />
+              </el-select>
               <el-input-number v-if="agent.agent_type === 'hook'" v-model="agentInput(agent.id).repeat" :min="1" :max="20" size="small" />
               <el-button type="success" size="small" :loading="agentRunning[agent.id]" @click="runAgentOnce(agent)">运行</el-button>
             </div>
@@ -822,7 +964,82 @@ onUnmounted(() => stopPoll());
         </el-table>
       </el-card>
     </div>
-  </div>
+    </div>
+    <div v-else-if="view === 'flow3-keywords'">
+      <el-alert title="关键词库" description="元数据 Agent 生成视频描述时的关键词堆砌数据源。主词库按搜索量优先写入，长尾词用于补充；导入 CSV 时自动按语言分类。" type="success" :closable="false" show-icon class="flow3-intro" />
+      <el-card shadow="never" class="toolbar-card">
+        <div class="toolbar">
+          <div class="toolbar-left">
+            <el-button type="primary" @click="openKwAdd">手动添加</el-button>
+            <el-button @click="openKwImport">导入 CSV</el-button>
+          </div>
+          <div class="toolbar-right">
+            <el-select v-model="kwFilter.language" clearable placeholder="语言" style="width: 130px" @change="loadKeywords(1)">
+              <el-option v-for="l in kwLangOptions" :key="l.value" :label="l.label" :value="l.value" />
+            </el-select>
+            <el-select v-model="kwFilter.source" clearable placeholder="来源" style="width: 150px" @change="loadKeywords(1)">
+              <el-option v-for="s in kwSourceOptions" :key="s.value" :label="s.label" :value="s.value" />
+            </el-select>
+            <el-input v-model="kwFilter.search" clearable placeholder="搜索关键词" style="width: 180px" @keyup.enter="loadKeywords(1)" @clear="loadKeywords(1)" />
+            <el-button @click="loadKeywords(1)">查询</el-button>
+            <el-button @click="loadKeywords()">刷新</el-button>
+          </div>
+        </div>
+      </el-card>
+      <el-card shadow="never" class="table-card">
+        <el-table :data="keywords" size="small" v-loading="kwLoading" empty-text="暂无关键词，点「导入 CSV」或「手动添加」">
+          <el-table-column prop="keyword" label="关键词" min-width="200" show-overflow-tooltip />
+          <el-table-column label="搜索量" width="100" sortable><template #default="{ row }">{{ row.search_volume || '—' }}</template></el-table-column>
+          <el-table-column label="语言" width="140">
+            <template #default="{ row }">
+              <el-select v-model="row.language" size="small" @change="changeKwLanguage(row, row.language)">
+                <el-option v-for="l in kwLangOptions" :key="l.value" :label="l.label" :value="l.value" />
+              </el-select>
+            </template>
+          </el-table-column>
+          <el-table-column label="来源" width="140"><template #default="{ row }"><el-tag size="small" :type="row.source === 'primary' ? 'warning' : 'info'" effect="plain">{{ kwSourceLabel(row.source) }}</el-tag></template></el-table-column>
+          <el-table-column label="启用" width="80"><template #default="{ row }"><el-switch v-model="row.enabled" @change="toggleKeyword(row)" /></template></el-table-column>
+          <el-table-column label="操作" width="90" fixed="right"><template #default="{ row }"><el-button size="small" type="danger" plain @click="deleteKeyword(row)">删除</el-button></template></el-table-column>
+        </el-table>
+        <el-pagination v-model:current-page="kwPage" class="pagination" layout="total, prev, pager, next" :page-size="10" :total="kwTotal" @current-change="loadKeywords" />
+      </el-card>
+    </div>
+
+  <!-- 关键词库：导入 CSV -->
+  <el-dialog v-model="kwImportDialog" title="导入关键词库 CSV" width="480px">
+    <el-form label-width="90px">
+      <el-form-item label="来源">
+        <el-radio-group v-model="kwImportSource">
+          <el-radio value="primary">主词库（关键词,搜索量）</el-radio>
+          <el-radio value="suggest">长尾词（序号,长尾词）</el-radio>
+        </el-radio-group>
+      </el-form-item>
+      <el-form-item label="CSV 文件">
+        <el-upload :auto-upload="false" :limit="1" accept=".csv" :on-change="onKwFileChange" :on-remove="() => (kwImportFile = null)">
+          <el-button>选择文件</el-button>
+          <template #tip><div class="form-hint">主词库两列「关键词,搜索量」；长尾词两列「序号,长尾关键词」。导入时自动按语言分类。</div></template>
+        </el-upload>
+      </el-form-item>
+    </el-form>
+    <template #footer>
+      <el-button @click="kwImportDialog = false">取消</el-button>
+      <el-button type="primary" :loading="kwImporting" @click="doKwImport">导入</el-button>
+    </template>
+  </el-dialog>
+
+  <!-- 关键词库：手动添加 -->
+  <el-dialog v-model="kwAddDialog" title="手动添加关键词" width="440px">
+    <el-form label-width="80px">
+      <el-form-item label="关键词" required><el-input v-model="kwForm.keyword" /></el-form-item>
+      <el-form-item label="搜索量"><el-input-number v-model="kwForm.search_volume" :min="0" :step="100" /></el-form-item>
+      <el-form-item label="语言"><el-select v-model="kwForm.language" style="width: 100%"><el-option v-for="l in kwLangOptions" :key="l.value" :label="l.label" :value="l.value" /></el-select></el-form-item>
+      <el-form-item label="来源"><el-select v-model="kwForm.source" style="width: 100%"><el-option v-for="s in kwSourceOptions" :key="s.value" :label="s.label" :value="s.value" /></el-select></el-form-item>
+    </el-form>
+    <template #footer>
+      <el-button @click="kwAddDialog = false">取消</el-button>
+      <el-button type="primary" :loading="kwSaving" @click="saveKeyword">添加</el-button>
+    </template>
+  </el-dialog>
 
   <!-- 详情弹窗 -->
   <el-dialog v-model="detailDialog" title="任务详情" width="720px" :destroy-on-close="true">

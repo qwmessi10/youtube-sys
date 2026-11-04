@@ -45,7 +45,7 @@ let sePollTimer = null;            // 运行中任务的进度轮询定时器
 
 const menuTitles = {
   tasks: "任务管理", agents: "关键词 Agent 管理", "suggest-expand": "获取 Suggest API 长尾词",
-  "flow3-tasks": "内容生成 - 任务管理", "flow3-agents": "内容生成 - Agent 管理", "flow3-materials": "内容生成 - 素材库",
+  "flow3-tasks": "内容生成 - 任务管理", "flow3-agents": "内容生成 - Agent 管理", "flow3-materials": "内容生成 - 素材库", "flow3-keywords": "内容生成 - 关键词库",
   "adspower-browsers": "AdsPower 自动化 - 浏览器管理", "adspower-ips": "AdsPower 自动化 - IP 管理", "adspower-tasks": "AdsPower 自动化 - 任务管理",
   "smm-accounts": "SMM 面板 - 个人中心", "smm-tasks": "SMM 面板 - 任务管理",
   "analytics-videos": "数据分析 - 视频库", "analytics-competitor": "数据分析 - 竞品 SEO 分析", "analytics-rankings": "数据分析 - 排名追踪",
@@ -419,6 +419,7 @@ watch(activeMenu, (menu) => {
           <el-menu-item index="flow3-tasks">任务管理</el-menu-item>
           <el-menu-item index="flow3-agents">Agent 管理</el-menu-item>
           <el-menu-item index="flow3-materials">素材库</el-menu-item>
+          <el-menu-item index="flow3-keywords">关键词库</el-menu-item>
         </el-sub-menu>
         <el-sub-menu index="adspower">
           <template #title>AdsPower 自动化系统</template>
@@ -606,7 +607,7 @@ watch(activeMenu, (menu) => {
           </el-card>
         </template>
         <Flow3System
-          v-else-if="['flow3-tasks', 'flow3-agents', 'flow3-materials'].includes(activeMenu)"
+          v-else-if="['flow3-tasks', 'flow3-agents', 'flow3-materials', 'flow3-keywords'].includes(activeMenu)"
           :view="activeMenu"
         />
         <AdsPowerSystem

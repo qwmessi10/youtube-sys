@@ -18,6 +18,7 @@ INSTALLED_APPS = [
     "keywords",
     "flow3",
     "uploader",
+    "smm",
 ]
 MIDDLEWARE = [
     "corsheaders.middleware.CorsMiddleware",
@@ -76,3 +77,11 @@ CELERY_RESULT_BACKEND = CELERY_BROKER_URL
 CELERY_TASK_TRACK_STARTED = True
 CELERY_TASK_TIME_LIMIT = 600
 CELERY_TASK_ALWAYS_EAGER = os.getenv("CELERY_TASK_ALWAYS_EAGER", "false").lower() == "true"
+
+# SMM 面板：有未完成任务时每 30s 同步一次状态（无任务时任务内部直接返回）。
+CELERY_BEAT_SCHEDULE = {
+    "sync-smm-task-statuses": {
+        "task": "smm.tasks.sync_smm_task_statuses",
+        "schedule": 30.0,
+    },
+}

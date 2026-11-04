@@ -15,10 +15,33 @@ LANGUAGES = [
 ]
 
 
+# 全局设置分组：按 key 前缀归类，供前端分组展示（避免一列到底）。
+SETTING_CATEGORIES = [
+    ("关键词系统", ["SERPAPI_", "YOUTUBE_API_KEY"]),
+    ("AI 模型", ["AI_", "GEMINI_"]),
+    ("内容生成", ["TTS_", "ELEVENLABS_", "REMOTION_"]),
+    ("AdsPower 自动化", ["ADSPOWER_", "UPLOADER_", "IP2LOCATION_"]),
+    ("SMM 面板", ["AUTOLAK_"]),
+]
+
+
+def categorize_setting_key(key):
+    for category, prefixes in SETTING_CATEGORIES:
+        for prefix in prefixes:
+            if key.startswith(prefix):
+                return category
+    return "其他"
+
+
 class GlobalSettingSerializer(serializers.ModelSerializer):
+    category = serializers.SerializerMethodField()
+
     class Meta:
         model = GlobalSetting
-        fields = ["id", "key", "value", "description", "updated_at"]
+        fields = ["id", "key", "value", "description", "category", "updated_at"]
+
+    def get_category(self, obj):
+        return categorize_setting_key(obj.key)
 
 
 class KeywordRunSerializer(serializers.ModelSerializer):

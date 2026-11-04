@@ -41,6 +41,11 @@ DEFAULT_SETTINGS = [
     ("ADSPOWER_API_RATE_LIMIT", "AdsPower 自动化-本地 API 调用频率上限（次/秒），默认 1"),
     ("UPLOADER_AGENT_TOKEN", "AdsPower 自动化-执行器回调鉴权 token（留空则不校验）"),
     ("UPLOADER_TASK_LOCK_TIMEOUT_MINUTES", "AdsPower 自动化-执行器任务锁超时时间（分钟），默认 30"),
+    ("IP2LOCATION_API_KEY", "AdsPower 自动化-IP2Location.io API Key（留空用免费额度，有 key 更稳）"),
+    ("AUTOLAK_API_BASE", "SMM 面板-后端 API 基址，默认 https://atpsv.autolak.in/client"),
+    ("AUTOLAK_UA", "SMM 面板-请求 User-Agent（直连需带浏览器 UA，否则被 WAF 拦）"),
+    ("AUTOLAK_ORIGIN", "SMM 面板-请求 Origin，默认 https://saircaf.autolak.in"),
+    ("AUTOLAK_REFERER", "SMM 面板-请求 Referer，默认 https://saircaf.autolak.in/"),
 ]
 
 SCORE_LABELS = {

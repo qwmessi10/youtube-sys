@@ -4,6 +4,7 @@ import axios from "axios";
 import { ElMessage, ElMessageBox } from "element-plus";
 import Flow3System from "./components/Flow3System.vue";
 import AdsPowerSystem from "./components/AdsPowerSystem.vue";
+import SmmPanelSystem from "./components/SmmPanelSystem.vue";
 
 // 当前菜单从 localStorage 恢复，刷新后停留在原页面而不是跳回默认。
 const activeMenu = ref(localStorage.getItem("activeMenu") || "tasks");
@@ -43,10 +44,23 @@ let sePollTimer = null;            // 运行中任务的进度轮询定时器
 const menuTitles = {
   tasks: "任务管理", agents: "关键词 Agent 管理", "suggest-expand": "获取 Suggest API 长尾词",
   "flow3-tasks": "内容生成 - 任务管理", "flow3-agents": "内容生成 - Agent 管理", "flow3-materials": "内容生成 - 素材库",
-  "adspower-browsers": "AdsPower 自动化 - 浏览器管理", "adspower-tasks": "AdsPower 自动化 - 任务管理",
+  "adspower-browsers": "AdsPower 自动化 - 浏览器管理", "adspower-ips": "AdsPower 自动化 - IP 管理", "adspower-tasks": "AdsPower 自动化 - 任务管理",
+  "smm-accounts": "SMM 面板 - 个人中心", "smm-tasks": "SMM 面板 - 任务管理",
   settings: "全局设置",
 };
 const menuTitle = computed(() => menuTitles[activeMenu.value] || "关键词系统");
+
+// 全局设置分组展示（后端返回 category 字段，这里按固定顺序分组）
+const settingCategories = ["关键词系统", "AI 模型", "内容生成", "AdsPower 自动化", "SMM 面板", "其他"];
+const settingsByCategory = computed(() => {
+  const groups = {};
+  for (const cat of settingCategories) groups[cat] = [];
+  for (const s of settings.value) {
+    const cat = s.category || "其他";
+    (groups[cat] ||= []).push(s);
+  }
+  return groups;
+});
 
 // Suggest 拓展任务状态 → 文案 + 标签色
 const seStatusMeta = {
@@ -183,6 +197,16 @@ async function saveSettings() {
     ElMessage.success("全局设置已保存");
   } catch {
     ElMessage.error("保存设置失败");
+  }
+}
+
+async function refreshUa() {
+  try {
+    await axios.post("/api/smm-accounts/refresh_ua/");
+    ElMessage.success("UA/Origin/Referer 已更新为最新值");
+    await loadSettings();
+  } catch {
+    ElMessage.error("更新失败");
   }
 }
 
@@ -369,7 +393,7 @@ watch(activeMenu, (menu) => {
         :default-active="activeMenu"
         @select="activeMenu = $event"
         class="menu"
-        :default-openeds="['keywords', 'content', 'tools']"
+        :default-openeds="['keywords', 'content', 'adspower', 'smm']"
         background-color="#17212d"
         text-color="#b6c5d4"
         active-text-color="#ffffff"
@@ -385,16 +409,22 @@ watch(activeMenu, (menu) => {
           <el-menu-item index="flow3-agents">Agent 管理</el-menu-item>
           <el-menu-item index="flow3-materials">素材库</el-menu-item>
         </el-sub-menu>
+        <el-sub-menu index="adspower">
+          <template #title>AdsPower 自动化系统</template>
+          <el-menu-item index="adspower-browsers">AdsPower 浏览器管理</el-menu-item>
+          <el-menu-item index="adspower-ips">IP 管理</el-menu-item>
+          <el-menu-item index="adspower-tasks">任务管理</el-menu-item>
+        </el-sub-menu>
+        <el-sub-menu index="smm">
+          <template #title>SMM 面板系统</template>
+          <el-menu-item index="smm-accounts">个人中心</el-menu-item>
+          <el-menu-item index="smm-tasks">任务管理</el-menu-item>
+        </el-sub-menu>
+        <el-menu-item index="settings">全局设置</el-menu-item>
         <el-sub-menu index="tools">
           <template #title>实用工具</template>
           <el-menu-item index="suggest-expand">获取 Suggest API 长尾词</el-menu-item>
         </el-sub-menu>
-        <el-sub-menu index="adspower">
-          <template #title>AdsPower 自动化系统</template>
-          <el-menu-item index="adspower-browsers">AdsPower 浏览器管理</el-menu-item>
-          <el-menu-item index="adspower-tasks">任务管理</el-menu-item>
-        </el-sub-menu>
-        <el-menu-item index="settings">全局设置</el-menu-item>
         <el-menu-item disabled index="data">数据抓取系统（后续）</el-menu-item>
       </el-menu>
     </el-aside>
@@ -569,15 +599,27 @@ watch(activeMenu, (menu) => {
           :view="activeMenu"
         />
         <AdsPowerSystem
-          v-else-if="['adspower-browsers', 'adspower-tasks'].includes(activeMenu)"
+          v-else-if="['adspower-browsers', 'adspower-ips', 'adspower-tasks'].includes(activeMenu)"
+          :view="activeMenu"
+        />
+        <SmmPanelSystem
+          v-else-if="['smm-accounts', 'smm-tasks'].includes(activeMenu)"
           :view="activeMenu"
         />
         <el-card v-else-if="activeMenu === 'settings'" shadow="never">
-          <template #header><strong>第三方 API 与 AI 接入配置</strong></template>
-          <p class="hint">保存后将优先使用这里的值；AI 配置已预留，第一期不会调用 AI。</p>
+          <template #header><strong>全局设置</strong></template>
+          <p class="hint">保存后将优先使用这里的值；设置按系统分组展示。</p>
           <el-form label-position="top" class="settings-form">
-            <el-form-item v-for="item in settings" :key="item.id" :label="item.key"><el-input v-model="item.value" type="textarea" :autosize="{ minRows: 1, maxRows: 3 }" /><small>{{ item.description }}</small></el-form-item>
-            <el-button type="primary" @click="saveSettings">保存设置</el-button>
+            <template v-for="cat in settingCategories" :key="cat">
+              <template v-if="settingsByCategory[cat]?.length">
+                <el-divider content-position="left">{{ cat }}</el-divider>
+                <el-form-item v-for="item in settingsByCategory[cat]" :key="item.id" :label="item.key"><el-input v-model="item.value" type="textarea" :autosize="{ minRows: 1, maxRows: 3 }" /><small>{{ item.description }}</small></el-form-item>
+              </template>
+            </template>
+            <div class="settings-actions">
+              <el-button type="primary" @click="saveSettings">保存设置</el-button>
+              <el-button type="warning" plain @click="refreshUa">一键更新 UA/Origin/Referer</el-button>
+            </div>
           </el-form>
         </el-card>
         <el-empty v-else description="该模块将在后续需求确认后开发" />

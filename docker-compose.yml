@@ -44,6 +44,15 @@ services:
       backend:
         condition: service_started
 
+  # SMM 面板任务状态定时同步（每 30s 触发，无未完成任务时任务内部直接返回）。
+  beat:
+    build: ./backend
+    env_file: .env
+    command: celery -A config beat --loglevel=INFO
+    depends_on:
+      backend:
+        condition: service_started
+
   # 流程一：Remotion 渲染服务（Node + 无头 Chromium）。worker 通过 HTTP 触发，
   # 封面/音频/成品经共享 media 卷交换（路径与 backend/worker 一致：/app/media）。
   render:

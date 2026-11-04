@@ -8,6 +8,7 @@ urlpatterns = [
     path("api/", include("keywords.urls")),
     path("api/", include("flow3.urls")),
     path("api/", include("uploader.urls")),
+    path("api/", include("smm.urls")),
 ]
 
 # 开发环境（DEBUG）下由 Django 直接托管 media；生产由 nginx 的 /media/ 反代到静态文件。

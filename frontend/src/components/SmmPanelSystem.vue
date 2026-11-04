@@ -159,6 +159,13 @@ async function saveTask() {
   if (!taskForm.value.key_words.trim()) return ElMessage.warning("请填写关键词");
   if (!taskForm.value.total_user) return ElMessage.warning("请填写刷量人数");
   if (taskForm.value.end_hours < 2) return ElMessage.warning("结束时间必须至少 2 小时后（面板按印度时区，需留足时差）");
+  const cost = Number(taskForm.value.total_user) * Number(taskForm.value.per_user);
+  const acc = findAccount(taskForm.value.account);
+  if (acc && cost > Number(acc.locked_remaining)) {
+    try {
+      await ElMessageBox.confirm(`本次成本约 ₹${cost}，超过锁定后剩余余额 ₹${acc.locked_remaining}，是否仍要继续下单？`, "余额不足警告", { type: "warning" });
+    } catch (e) { return; }
+  }
   taskSaving.value = true;
   try {
     await axios.post("/api/smm-tasks/", taskForm.value);
@@ -238,6 +245,20 @@ const pollSchedule = computed(() => {
   return slots;
 });
 
+// 预估成本区间（最低=每批下限，最高=每批上限；首次刷量也按每人奖励 per_user 计）
+const pollCostRange = computed(() => {
+  const per = Number(pollForm.value.per_user) || 0;
+  const initial = Number(pollForm.value.initial_count) || 0;
+  const total = Number(pollForm.value.poll_total) || 0;
+  const min = initial * per + total * pollForm.value.batch_min * per;
+  const max = initial * per + total * pollForm.value.batch_max * per;
+  return { min: Math.ceil(min), max: Math.ceil(max) };
+});
+
+function findAccount(id) {
+  return accounts.value.find((a) => Number(a.id) === Number(id));
+}
+
 function fmtSlot(d) {
   const p = (x) => String(x).padStart(2, "0");
   return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:00`;
@@ -273,6 +294,12 @@ async function savePollTask() {
   if (!pollForm.value.youtube_link.trim()) return ElMessage.warning("请填写 YouTube 链接");
   if (!pollForm.value.key_words.trim()) return ElMessage.warning("请填写关键词");
   if (!pollForm.value.poll_total || pollForm.value.poll_total < 1) return ElMessage.warning("请填写轮询次数");
+  const acc = findAccount(pollForm.value.account);
+  if (acc && pollCostRange.value.max > Number(acc.locked_remaining)) {
+    try {
+      await ElMessageBox.confirm(`预估最大成本 ₹${pollCostRange.value.max}，超过锁定后剩余余额 ₹${acc.locked_remaining}，是否仍要继续创建？`, "余额不足警告", { type: "warning" });
+    } catch (e) { return; }
+  }
   pollSaving.value = true;
   try {
     await axios.post("/api/smm-poll-tasks/", pollForm.value);
@@ -294,6 +321,16 @@ async function stopPollTask(row) {
     await loadPollTasks();
   } catch (e) {
     if (e !== "cancel") ElMessage.error("停止失败");
+  }
+}
+
+async function restartPollTask(row) {
+  try {
+    await axios.post(`/api/smm-poll-tasks/${row.id}/restart/`);
+    ElMessage.success("已重启（停掉的时间跳过不补）");
+    await loadPollTasks();
+  } catch (e) {
+    ElMessage.error(e.response?.data?.detail || "重启失败");
   }
 }
 
@@ -346,7 +383,9 @@ onMounted(() => {
         <el-table-column prop="panel_user_name" label="面板昵称" min-width="130" />
         <el-table-column prop="tg_user_id" label="Telegram ID" width="140" />
         <el-table-column prop="username" label="@用户名" width="140" />
-        <el-table-column label="余额" width="120"><template #default="{ row }">₹{{ row.balance }}</template></el-table-column>
+        <el-table-column label="实际余额" width="100"><template #default="{ row }">₹{{ row.balance }}</template></el-table-column>
+        <el-table-column label="锁定中" width="90"><template #default="{ row }">₹{{ row.locked_total }}</template></el-table-column>
+        <el-table-column label="剩余可用" width="100"><template #default="{ row }"><span :style="Number(row.locked_remaining) < 0 ? 'color:#f56c6c' : ''">₹{{ row.locked_remaining }}</span></template></el-table-column>
         <el-table-column label="状态" width="110"><template #default="{ row }"><el-tag size="small" :type="accountStatusMeta[row.status]?.type || 'info'" effect="light">{{ accountStatusMeta[row.status]?.label || row.status }}</el-tag></template></el-table-column>
         <el-table-column prop="remark" label="备注" min-width="120" show-overflow-tooltip />
         <el-table-column label="操作" width="280" fixed="right"><template #default="{ row }">
@@ -469,8 +508,9 @@ onMounted(() => {
             <el-table-column label="窗口(北京)" width="110"><template #default="{ row }">{{ row.window_start_hour }}:00-{{ row.window_end_hour }}:00</template></el-table-column>
             <el-table-column label="下次执行" width="140"><template #default="{ row }">{{ row.next_poll_at ? fmtSlot(new Date(row.next_poll_at)) : "—" }}</template></el-table-column>
             <el-table-column label="状态" width="100"><template #default="{ row }"><el-tag size="small" :type="pollStatusMeta[row.status]?.type || 'info'" effect="light">{{ pollStatusMeta[row.status]?.label || row.status }}</el-tag></template></el-table-column>
-            <el-table-column label="操作" width="170" fixed="right"><template #default="{ row }">
-              <el-button size="small" type="warning" plain :disabled="row.status !== 'running'" @click="stopPollTask(row)">停止</el-button>
+            <el-table-column label="操作" width="220" fixed="right"><template #default="{ row }">
+              <el-button v-if="row.status === 'running'" size="small" type="warning" plain @click="stopPollTask(row)">停止</el-button>
+              <el-button v-else size="small" type="success" plain @click="restartPollTask(row)">重启</el-button>
               <el-button size="small" type="danger" plain @click="deletePollTask(row)">删除</el-button>
             </template></el-table-column>
           </el-table>
@@ -514,7 +554,7 @@ onMounted(() => {
               </div>
             </el-form-item>
             <el-form-item v-if="pollSchedule.length" label="预估成本">
-              <span>约 ₹{{ Math.ceil((pollForm.initial_count || 0) + pollSchedule.length * (pollForm.batch_min + pollForm.batch_max) / 2 * pollForm.per_user) }}（按每批均值估算，实际随随机浮动）</span>
+              <span>最低 ₹{{ pollCostRange.min }} ~ 最高 ₹{{ pollCostRange.max }}（首次刷量 + 轮询均按每人奖励 ₹{{ pollForm.per_user }} 计算）</span>
             </el-form-item>
           </el-form>
           <template #footer>

@@ -344,3 +344,18 @@ class SMMPollTaskViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin,
         pt.status = SMMPollTask.STATUS_STOPPED
         pt.save(update_fields=["status", "updated_at"])
         return Response(SMMPollTaskSerializer(pt).data)
+
+    @action(detail=True, methods=["post"])
+    def restart(self, request, pk=None):
+        """重启轮询任务：从当前时间之后的下一个窗口内整点继续，停掉的时间跳过不补。"""
+        pt = self.get_object()
+        if pt.status not in (SMMPollTask.STATUS_STOPPED, SMMPollTask.STATUS_FAILED):
+            return Response({"detail": "只有已停止/失败的任务才能重启"}, status=status.HTTP_400_BAD_REQUEST)
+        if pt.poll_done >= pt.poll_total:
+            return Response({"detail": "任务已刷满，无需重启"}, status=status.HTTP_400_BAD_REQUEST)
+        now = timezone.localtime(timezone.now())
+        pt.next_poll_at = next_slot_after(now, pt.window_start_hour, pt.window_end_hour)
+        pt.status = SMMPollTask.STATUS_RUNNING
+        pt.fail_count = 0
+        pt.save()
+        return Response(SMMPollTaskSerializer(pt).data)

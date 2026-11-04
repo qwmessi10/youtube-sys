@@ -129,3 +129,9 @@ class SMMPollTask(models.Model):
 
     def __str__(self):
         return f"{self.account} - {self.key_words or self.youtube_link}"
+
+    @property
+    def locked_amount(self):
+        """锁定金额（按最大估算）：首次刷量 + 轮询次数×每批上限，均按每人奖励 per_user 计。"""
+        initial = float(self.initial_count or 0)
+        return float(self.per_user) * (initial + self.poll_total * self.batch_max)

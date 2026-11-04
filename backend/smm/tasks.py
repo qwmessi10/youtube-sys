@@ -113,10 +113,8 @@ def sync_smm_poll_tasks():
                 pt.save(update_fields=["status", "fail_count", "updated_at"])
                 continue
 
-        # 推进到下一个窗口内整点（注意转北京时间再算窗口小时）
-        pt.next_poll_at = next_slot_after(
-            timezone.localtime(pt.next_poll_at), pt.window_start_hour, pt.window_end_hour
-        )
+        # 推进到当前时间之后的下一个窗口内整点（跳过漏掉的时段，不做补刷）
+        pt.next_poll_at = next_slot_after(now, pt.window_start_hour, pt.window_end_hour)
         if pt.poll_done >= pt.poll_total:
             pt.status = SMMPollTask.STATUS_COMPLETED
         pt.save()

@@ -5,18 +5,28 @@ from .models import SMMAccount, SMMPollTask, SMMTask
 
 class SMMAccountSerializer(serializers.ModelSerializer):
     status_label = serializers.CharField(source="get_status_display", read_only=True)
+    locked_total = serializers.SerializerMethodField()
+    locked_remaining = serializers.SerializerMethodField()
 
     class Meta:
         model = SMMAccount
         fields = [
             "id", "tg_user_id", "username", "first_name", "last_name",
             "panel_user_name", "token", "user_identifier", "balance",
+            "locked_total", "locked_remaining",
             "status", "status_label", "remark", "created_at", "updated_at",
         ]
         read_only_fields = [
             "first_name", "last_name", "panel_user_name", "token",
             "user_identifier", "balance", "status",
         ]
+
+    def get_locked_total(self, obj):
+        total = sum(pt.locked_amount for pt in obj.poll_tasks.filter(status="running"))
+        return round(total, 2)
+
+    def get_locked_remaining(self, obj):
+        return round(float(obj.balance) - self.get_locked_total(obj), 2)
 
 
 class SMMTaskSerializer(serializers.ModelSerializer):

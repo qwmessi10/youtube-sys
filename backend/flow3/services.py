@@ -188,31 +188,31 @@ HOOK_OUTPUT_SPEC = """严格只输出一个 JSON 对象，不要输出任何解�
 {"video_prompt": "用于外部 AI 视频引擎的提示词（一段连贯描述，含画面、运镜、口播台词、字幕、风格，时长约10秒）"}"""
 
 DEFAULT_NARRATION_PROMPT = """# 角色
-你是一位务实、可信的印度英语口播文案师，语气像正规教程/官方介绍，不浮夸。
+你是一位务实、可信的口播文案师，语气像正规教程/官方介绍，不浮夸。
 
 # 目标
-根据给定的关键词，撰写一段用于视频配音（TTS 朗读）的印度英语旁白，
+根据给定的关键词，撰写一段用于视频配音（TTS 朗读）的旁白，语言为 [language]，
 目的是自然介绍并引导观众使用优惠码 {PROMO_CODE} 完成注册。
 画面由固定模板呈现，你只需产出要被朗读的旁白文字。
 
 # 要求
 - 与关键词「[input]」强相关，围绕该平台/产品/操作讲清楚「怎么做、用什么码、有什么好处」。
-- 语气务实、可信、口语自然，贴合印度本地观众；不要浮夸承诺和夸张煽动。
+- 语气务实、可信、口语自然，贴合目标语言地区观众；不要浮夸承诺和夸张煽动。
 - 必须自然地把优惠码读出来：在要提到优惠码处原样写占位符 {{promo_code}}（不要自己编造、不要改写），
   系统会在渲染时替换成真实优惠码，TTS 会把真实码读出来。
 
 # 输入
 关键词：[input]
-国家：{COUNTRY}
+语言：[language]
 
 # 输出
 [output]"""
 
 NARRATION_OUTPUT_SPEC = """严格只输出一个 JSON 对象，不要输出任何解释文字或 markdown 代码块标记。
 需要把旁白拆成 {shot_count} 段，每段约 {shot_duration} 秒，总时长约 {total_duration} 秒。格式如下：
-{{"shots": [{{"index": 1, "duration": {shot_duration}, "narration": "该段旁白文案（英文）"}}]}}
+{{"shots": [{{"index": 1, "duration": {shot_duration}, "narration": "该段旁白文案（目标语言）"}}]}}
 shots 数组恰好包含 {shot_count} 个元素，index 从 1 递增。
-重要：每段 narration 必须简短，**每段不超过 {narration_word_limit} 个英文单词**，确保朗读时长不超过 {shot_duration} 秒。
+重要：每段 narration 必须简短，**每段不超过 {narration_word_limit} 个单词**，确保朗读时长不超过 {shot_duration} 秒。
 如需提及优惠码，请原样写占位符 {{promo_code}}（不要自己编造），系统会在渲染时替换成真实优惠码。"""
 
 DEFAULT_BLUR_BG_PROMPT = """# 角色
@@ -444,7 +444,7 @@ def generate_hook_prompt(run):
 
 
 def generate_narration_script(run, shot_count, shot_duration):
-    """语音文案 Agent → 产出分段旁白（印式英语）。返回 (data, log)。data={shots:[{index,duration,narration}]}。"""
+    """语音文案 Agent → 产出分段旁白（按任务语言）。返回 (data, log)。data={shots:[{index,duration,narration}]}。"""
     prompt, agent = _get_prompt(Flow3Agent.AGENT_NARRATION)
     if prompt is None:
         raise RuntimeError("语音文案 Agent 已停用")
@@ -454,7 +454,10 @@ def generate_narration_script(run, shot_count, shot_duration):
         shot_count=shot_count, shot_duration=shot_duration,
         total_duration=total, narration_word_limit=narration_word_limit,
     )
-    full = _inject_globals(prompt, run).replace("[input]", run.keyword).replace("[output]", output_spec)
+    full = (_inject_globals(prompt, run)
+            .replace("[input]", run.keyword)
+            .replace("[language]", language_display(run.language))
+            .replace("[output]", output_spec))
     model = _agent_model(agent)
     raw = _call_ai_stream([{"role": "user", "content": full}], model=model)
     data = _extract_json(raw)
@@ -589,19 +592,33 @@ def generate_image(image_prompt):
 
 
 # ===========================================================================
-# 印式英语 TTS（Edge TTS 免费，印式音色）。失败降级 elevenlabs，再失败跳过该段。
+# 多语言 TTS（Edge TTS 免费）。失败降级 elevenlabs，再失败跳过该段。
 # ===========================================================================
-# 印式英语音色（默认男声 Prabhat）。全局设置 FLOW3_TTS_VOICE 优先。
-_INDIAN_EN_VOICES = ["en-IN-PrabhatNeural", "en-IN-NeerjaNeural"]
+# language 代码 → edge-tts 默认音色（男声优先）。全局设置 FLOW3_TTS_VOICE 优先覆盖。
+_EDGE_VOICE_MAP = {
+    "en-IN": "en-IN-PrabhatNeural",   # 印度英语
+    "en": "en-US-GuyNeural",          # 英语（美式）
+    "pt-BR": "pt-BR-AntonioNeural",   # 巴西葡萄牙语
+    "pt": "pt-BR-AntonioNeural",      # 葡萄牙语（复用巴西）
+    "ru": "ru-RU-DmitryNeural",       # 俄语
+    "es": "es-ES-AlvaroNeural",       # 西班牙语
+    "hi": "hi-IN-MadhurNeural",       # 印地语
+    "de": "de-DE-ConradNeural",       # 德语
+    "fr": "fr-FR-HenriNeural",        # 法语
+    "it": "it-IT-DiegoNeural",        # 意大利语
+    "ja": "ja-JP-KeitaNeural",        # 日语
+    "ko": "ko-KR-InJoonNeural",       # 韩语
+    "ar": "ar-SA-HamedNeural",        # 阿拉伯语
+}
 
 
 def _edge_voice(language):
-    """取 TTS 音色：全局设置 FLOW3_TTS_VOICE 优先，否则印式英语默认。"""
+    """取 TTS 音色：全局设置 FLOW3_TTS_VOICE 优先，否则按 language 映射，未登记回退印度英语。"""
     configured = get_setting("FLOW3_TTS_VOICE")
     if configured:
         return configured
-    # 流程3 固定印式英语；language 预期为 en-IN。
-    return _INDIAN_EN_VOICES[0]
+    lang = (language or "").strip()
+    return _EDGE_VOICE_MAP.get(lang, "en-IN-PrabhatNeural")
 
 
 def _tts_edge(text, language, out_path):

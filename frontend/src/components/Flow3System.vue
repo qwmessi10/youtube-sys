@@ -248,7 +248,7 @@ async function openUploadDialog(run) {
   try {
     const { data } = await axios.get("/api/adspower-profiles/", { params: { page: 1, page_size: 200 } });
     uploadProfiles.value = data.results || [];
-    if (!uploadProfiles.value.length) ElMessage.warning("没有可用浏览器，请先到 AdsPower 浏览器管理页同步");
+    if (!uploadProfiles.value.length) ElMessage.warning("没有可用浏览器，请先到 AdsPower 环境管理页同步");
   } catch {
     ElMessage.error("加载浏览器列表失败");
   }

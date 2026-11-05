@@ -46,7 +46,7 @@ let sePollTimer = null;            // 运行中任务的进度轮询定时器
 const menuTitles = {
   tasks: "任务管理", agents: "关键词 Agent 管理", "suggest-expand": "获取 Suggest API 长尾词",
   "flow3-tasks": "内容生成 - 任务管理", "flow3-agents": "内容生成 - Agent 管理", "flow3-materials": "内容生成 - 素材库", "flow3-keywords": "内容生成 - 关键词库",
-  "adspower-browsers": "AdsPower 自动化 - 浏览器管理", "adspower-ips": "AdsPower 自动化 - IP 管理", "adspower-tasks": "AdsPower 自动化 - 任务管理",
+  "adspower-browsers": "AdsPower 自动化 - 环境管理", "adspower-ips": "AdsPower 自动化 - IP 管理", "adspower-tasks": "AdsPower 自动化 - 任务管理",
   "smm-accounts": "SMM 面板 - 个人中心", "smm-tasks": "SMM 面板 - 任务管理",
   "analytics-videos": "数据分析 - 视频库", "analytics-competitor": "数据分析 - 竞品 SEO 分析", "analytics-rankings": "数据分析 - 排名追踪",
   home: "首页",
@@ -65,6 +65,29 @@ const settingsByCategory = computed(() => {
   }
   return groups;
 });
+
+// 只保留有内容的分类，供 tabs 渲染
+const visibleSettingCategories = computed(() =>
+  settingCategories.filter((c) => settingsByCategory.value[c]?.length)
+);
+
+// 设置项的中文标签：优先用 description，去掉冗余的「分类-」前缀
+function settingLabel(item) {
+  const d = item.description || item.key;
+  const cat = item.category;
+  if (cat && d.startsWith(cat)) return d.slice(cat.length).replace(/^[-:：\s]+/, "");
+  return d;
+}
+
+// 判断设置项用什么输入控件
+function settingInputType(item) {
+  const k = item.key || "";
+  if (k === "AI_MODEL_KEYS") return "textarea";              // JSON 映射
+  if (/(KEY|TOKEN|SECRET|PASSWORD)$/.test(k)) return "password"; // 敏感信息
+  const v = item.value || "";
+  if (v.length > 60 || /(UA|REFERER|ORIGIN|MODELS|BASE_URL|VOICE)/.test(k)) return "textarea";
+  return "text";
+}
 
 // Suggest 拓展任务状态 → 文案 + 标签色
 const seStatusMeta = {
@@ -423,7 +446,7 @@ watch(activeMenu, (menu) => {
         </el-sub-menu>
         <el-sub-menu index="adspower">
           <template #title>AdsPower 自动化系统</template>
-          <el-menu-item index="adspower-browsers">AdsPower 浏览器管理</el-menu-item>
+          <el-menu-item index="adspower-browsers">环境管理</el-menu-item>
           <el-menu-item index="adspower-ips">IP 管理</el-menu-item>
           <el-menu-item index="adspower-tasks">任务管理</el-menu-item>
         </el-sub-menu>
@@ -625,19 +648,38 @@ watch(activeMenu, (menu) => {
         />
         <el-card v-else-if="activeMenu === 'settings'" shadow="never">
           <template #header><strong>全局设置</strong></template>
-          <p class="hint">保存后将优先使用这里的值；设置按系统分组展示。</p>
-          <el-form label-position="top" class="settings-form">
-            <template v-for="cat in settingCategories" :key="cat">
-              <template v-if="settingsByCategory[cat]?.length">
-                <el-divider content-position="left">{{ cat }}</el-divider>
-                <el-form-item v-for="item in settingsByCategory[cat]" :key="item.id" :label="item.key"><el-input v-model="item.value" type="textarea" :autosize="{ minRows: 1, maxRows: 3 }" /><small>{{ item.description }}</small></el-form-item>
-              </template>
-            </template>
-            <div class="settings-actions">
-              <el-button type="primary" @click="saveSettings">保存设置</el-button>
-              <el-button type="warning" plain @click="refreshUa">一键更新 UA/Origin/Referer</el-button>
-            </div>
-          </el-form>
+          <p class="hint">按系统分组管理；保存后优先使用这里配置的值，留空则回退到 .env。</p>
+          <el-tabs tab-position="left" class="settings-tabs">
+            <el-tab-pane v-for="cat in visibleSettingCategories" :key="cat" :label="cat">
+              <el-form label-position="top" class="settings-form">
+                <el-form-item v-for="item in settingsByCategory[cat]" :key="item.id">
+                  <template #label>
+                    <span class="setting-label-text">{{ settingLabel(item) }}</span>
+                    <span class="setting-key-text">{{ item.key }}</span>
+                  </template>
+                  <el-input
+                    v-if="settingInputType(item) === 'password'"
+                    v-model="item.value"
+                    type="password"
+                    show-password
+                    placeholder="留空则使用 .env 中的值"
+                  />
+                  <el-input
+                    v-else-if="settingInputType(item) === 'textarea'"
+                    v-model="item.value"
+                    type="textarea"
+                    :autosize="{ minRows: 1, maxRows: 4 }"
+                    placeholder="留空则使用 .env 中的值"
+                  />
+                  <el-input v-else v-model="item.value" placeholder="留空则使用 .env 中的值" />
+                </el-form-item>
+              </el-form>
+            </el-tab-pane>
+          </el-tabs>
+          <div class="settings-actions">
+            <el-button type="primary" @click="saveSettings">保存设置</el-button>
+            <el-button type="warning" plain @click="refreshUa">一键更新 UA/Origin/Referer</el-button>
+          </div>
         </el-card>
         <el-empty v-else description="该模块将在后续需求确认后开发" />
       </el-main>

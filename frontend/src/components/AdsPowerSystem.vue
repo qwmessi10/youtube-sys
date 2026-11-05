@@ -448,7 +448,7 @@ onMounted(() => loadByView(props.view));
 watch(() => props.view, (v) => loadByView(v));
 </script>
 <template>
-  <!-- ==================== 浏览器管理 ==================== -->
+  <!-- ==================== 环境管理 ==================== -->
   <template v-if="view === 'adspower-browsers'">
     <el-card shadow="never" class="toolbar-card">
       <div class="toolbar">
@@ -645,7 +645,7 @@ watch(() => props.view, (v) => loadByView(v));
         <el-form label-width="110px" style="max-width: 720px">
           <el-form-item label="标题" required><el-input v-model="form.title" placeholder="YouTube 视频标题" /></el-form-item>
           <el-form-item label="描述"><el-input v-model="form.description" type="textarea" :autosize="{ minRows: 3, maxRows: 8 }" placeholder="视频描述" /></el-form-item>
-          <el-form-item label="目标浏览器" required>
+          <el-form-item label="目标环境" required>
             <el-select v-model="form.profile" filterable placeholder="选择 AdsPower 环境" style="width: 360px">
               <el-option v-for="p in profiles" :key="p.user_id" :label="`${p.serial_number} · ${p.name}（${p.proxy_summary}）`" :value="p.user_id" />
             </el-select>
@@ -687,7 +687,7 @@ watch(() => props.view, (v) => loadByView(v));
         <el-alert title="任务由系统内置执行器自动串行领取；「排队中」通常会在约 10 秒内开始执行。请保持 Docker Desktop 与 AdsPower 客户端运行。开发阶段执行到「草稿已保存」为止，请到对应浏览器的 YouTube Studio 核对后手动发布。" type="warning" :closable="false" class="note" />
         <el-table :data="tasks" v-loading="taskLoading" size="small" empty-text="暂无任务">
           <el-table-column label="任务 / 标题" min-width="200"><template #default="{ row }"><div>{{ row.name || row.title }}</div><small class="sub">{{ row.source_run_keyword ? `来自内容任务：${row.source_run_keyword}` : "手动创建" }}</small></template></el-table-column>
-          <el-table-column label="目标浏览器" min-width="140"><template #default="{ row }">{{ row.profile_serial }} · {{ row.profile_name }}</template></el-table-column>
+          <el-table-column label="目标环境" min-width="140"><template #default="{ row }">{{ row.profile_serial }} · {{ row.profile_name }}</template></el-table-column>
           <el-table-column label="状态" width="110"><template #default="{ row }"><el-tag :type="statusType(row.status)" size="small" effect="light">{{ statusLabel(row.status) }}</el-tag></template></el-table-column>
           <el-table-column label="视频链接" min-width="180"><template #default="{ row }"><a v-if="row.video_url" :href="row.video_url" target="_blank" rel="noreferrer">打开</a><span v-else>—</span></template></el-table-column>
           <el-table-column label="创建时间" min-width="160"><template #default="{ row }">{{ datetime(row.created_at) }}</template></el-table-column>

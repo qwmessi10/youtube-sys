@@ -67,6 +67,14 @@ const selectedScreenIds = ref([]);
 const selectedBgmIds = ref([]);
 const materialLoading = ref(false);
 const tagLabel = (t) => (t === "used" ? "已使用" : "未使用");
+// created_at(ISO/UTC) → 本地日期 YYYY-MM-DD
+const formatDate = (iso) => {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  if (isNaN(d)) return String(iso).slice(0, 10);
+  const p = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+};
 // 任务创建下拉（独立于素材库分页列表，避免分页只取一页）
 const hookOptions = ref([]);
 const screenOptions = ref([]);
@@ -974,6 +982,7 @@ onUnmounted(() => stopPoll());
               </el-select>
             </template></el-table-column>
             <el-table-column label="预览" width="80"><template #default="{ row }"><a v-if="row.file_url" :href="row.file_url" target="_blank">查看</a></template></el-table-column>
+            <el-table-column label="上传日期" width="110"><template #default="{ row }">{{ formatDate(row.created_at) }}</template></el-table-column>
             <el-table-column label="操作" width="90"><template #default="{ row }"><el-button size="small" type="danger" plain @click="deleteMaterial(row)">删除</el-button></template></el-table-column>
           </el-table>
           <el-pagination v-model:current-page="hookPage" class="pagination" layout="total, prev, pager, next" :page-size="20" :total="hookTotal" @current-change="(p) => loadMaterials('hook', p)" />
@@ -996,6 +1005,7 @@ onUnmounted(() => stopPoll());
             <el-table-column prop="name" label="名称" min-width="200" />
             <el-table-column label="时长" width="100"><template #default="{ row }">{{ row.duration ? row.duration + 's' : '—' }}</template></el-table-column>
             <el-table-column label="预览" width="90"><template #default="{ row }"><a v-if="row.file_url" :href="row.file_url" target="_blank">查看</a></template></el-table-column>
+            <el-table-column label="上传日期" width="110"><template #default="{ row }">{{ formatDate(row.created_at) }}</template></el-table-column>
             <el-table-column label="启用" width="80"><template #default="{ row }"><el-tag size="small" :type="row.enabled ? 'success' : 'info'">{{ row.enabled ? '启用' : '停用' }}</el-tag></template></el-table-column>
             <el-table-column label="操作" width="100"><template #default="{ row }"><el-button size="small" type="danger" plain @click="deleteMaterial(row)">删除</el-button></template></el-table-column>
           </el-table>
@@ -1019,6 +1029,7 @@ onUnmounted(() => stopPoll());
             <el-table-column prop="name" label="名称" min-width="200" />
             <el-table-column label="时长" width="100"><template #default="{ row }">{{ row.duration ? row.duration + 's' : '—' }}</template></el-table-column>
             <el-table-column label="试听" width="90"><template #default="{ row }"><a v-if="row.file_url" :href="row.file_url" target="_blank">播放</a></template></el-table-column>
+            <el-table-column label="上传日期" width="110"><template #default="{ row }">{{ formatDate(row.created_at) }}</template></el-table-column>
             <el-table-column label="启用" width="80"><template #default="{ row }"><el-tag size="small" :type="row.enabled ? 'success' : 'info'">{{ row.enabled ? '启用' : '停用' }}</el-tag></template></el-table-column>
             <el-table-column label="操作" width="100"><template #default="{ row }"><el-button size="small" type="danger" plain @click="deleteMaterial(row)">删除</el-button></template></el-table-column>
           </el-table>

@@ -1,0 +1,55 @@
+REQ POST https://atpsv.autolak.in/client/user/balance
+  HDR {"authorization": "hpFpBg/NJe8SuK5l8PqRhtxAbtomJghgPVBuk/wM6kc=", "identifier": "XWHG968505", "usertype": "publisher", "tguserid": "8196195827", "tgfirstname": "Libbie", "tglastname": "M", "username": "okokok1928ok"}
+  BODY {"noLoading":true}
+REQ POST https://atpsv.autolak.in/client/user/balance
+  HDR {"authorization": "hpFpBg/NJe8SuK5l8PqRhtxAbtomJghgPVBuk/wM6kc=", "identifier": "XWHG968505", "usertype": "publisher", "tguserid": "8196195827", "tgfirstname": "Libbie", "tglastname": "M", "username": "okokok1928ok"}
+  BODY {"noLoading":true}
+REQ POST https://atpsv.autolak.in/client/publish/searchTaskStatistic
+  HDR {"authorization": "hpFpBg/NJe8SuK5l8PqRhtxAbtomJghgPVBuk/wM6kc=", "identifier": "XWHG968505", "usertype": "publisher", "tguserid": "8196195827", "tgfirstname": "Libbie", "tglastname": "M", "username": "okokok1928ok"}
+  BODY {}
+REQ POST https://atpsv.autolak.in/client/activity/limitCreateTaskFlag
+  HDR {"authorization": "hpFpBg/NJe8SuK5l8PqRhtxAbtomJghgPVBuk/wM6kc=", "identifier": "XWHG968505", "usertype": "publisher", "tguserid": "8196195827", "tgfirstname": "Libbie", "tglastname": "M", "username": "okokok1928ok"}
+  BODY 
+RESP 200 https://atpsv.autolak.in/client/user/balance
+  {"code":0,"msg":"success","data":{"balance":3013.00},"success":true}
+RESP 200 https://atpsv.autolak.in/client/activity/limitCreateTaskFlag
+  {"code":0,"msg":"success","data":{"InnerFlag":false,"SellFlag":true,"OutFlag":true},"success":true}
+REQ POST https://atpsv.autolak.in/client/publish/searchTaskRecord
+  HDR {"authorization": "hpFpBg/NJe8SuK5l8PqRhtxAbtomJghgPVBuk/wM6kc=", "identifier": "XWHG968505", "usertype": "publisher", "tguserid": "8196195827", "tgfirstname": "Libbie", "tglastname": "M", "username": "okokok1928ok"}
+  BODY {"startTime":"2026-11-01 00:00:00","endTime":"2026-11-30 23:59:59","page":1,"pageSize":100,"status":2,"taskId":""}
+RESP 200 https://atpsv.autolak.in/client/publish/searchTaskStatistic
+  {"code":0,"msg":"success","data":{"processCount":0,"finishCount":238},"success":true}
+RESP 200 https://atpsv.autolak.in/client/user/balance
+  {"code":0,"msg":"success","data":{"balance":3013.00},"success":true}
+RESP 200 https://atpsv.autolak.in/client/publish/searchTaskRecord
+  {"code":0,"msg":"success","data":{"pageNum":1,"pageSize":100,"total":2,"result":[{"type":"SEO4","taskId":"ed341a2bf77c457bbac11957c87e1dd1","showId":"YTSEO4275Взлома","channelName":"Взломанныйаккаунт","createTime":"03-11-2026 06:30 AM","totalUsers":500,"pendingUsers":500,"status":"Completed","keyWords":"1win promo code","cost":850.00,"videoStatus":"Normal","youtubeLink":"https://youtu.be/MzG2LskPtsU","refund":850.00,"msg":null,"completeSize":500,"per":1.70,"commentNum":1,"endTime":"03-11-2026 08:00 AM","imgUrl":"https://i.ytimg.com/vi/MzG2LskPtsU/hqdefault.jpg","failNum":0,"successRate":"100%","failRate":"0%","commentType":10,"videoTime":234,"taskCost":850.00},{"type":"SEO4","taskId":"2244d378ae134885ad5fbecaec768cc6","showId":"YTSEO4673Взлома","channelName":"Взломанныйаккаунт","createTime":"02-11-2026 07:44 PM","totalUsers":500,"pendingUsers":500,"status":"Completed","keyWords":"1win promo code","cost":1000.00,"videoStatus":"Normal","youtubeLink":"https://youtu.be/MzG2LskPtsU","refund":1000.00,"msg":null,"completeSize":500,"per":2.00,"commentNum":1,"endTime":"02-11-2026 08:44 PM","imgUrl":"https://i.ytimg.com/vi/MzG2LskPtsU/hqdefault.jpg","failNum":0,"successRate":"100%","failRate":"0%","commentType":10,"videoTime":234,"taskCost":1000.00}]},"success":true}
+REQ POST https://atpsv.autolak.in/client/user/balance
+  HDR {"authorization": "hpFpBg/NJe8SuK5l8PqRhtxAbtomJghgPVBuk/wM6kc=", "identifier": "XWHG968505", "usertype": "publisher", "tguserid": "8196195827", "tgfirstname": "Libbie", "tglastname": "M", "username": "okokok1928ok"}
+  BODY {"noLoading":true}
+REQ POST https://atpsv.autolak.in/client/activity/limitCreateTaskFlag
+  HDR {"authorization": "hpFpBg/NJe8SuK5l8PqRhtxAbtomJghgPVBuk/wM6kc=", "identifier": "XWHG968505", "usertype": "publisher", "tguserid": "8196195827", "tgfirstname": "Libbie", "tglastname": "M", "username": "okokok1928ok"}
+  BODY 
+REQ POST https://atpsv.autolak.in/client/activity/searchBonusPage
+  HDR {"authorization": "hpFpBg/NJe8SuK5l8PqRhtxAbtomJghgPVBuk/wM6kc=", "identifier": "XWHG968505", "usertype": "publisher", "tguserid": "8196195827", "tgfirstname": "Libbie", "tglastname": "M", "username": "okokok1928ok"}
+  BODY 
+RESP 200 https://atpsv.autolak.in/client/user/balance
+  {"code":0,"msg":"success","data":{"balance":3013.00},"success":true}
+RESP 200 https://atpsv.autolak.in/client/activity/searchBonusPage
+  {"code":0,"msg":"success","data":{"bonus":0.00,"expiredBonus":0,"todayDrawCount":0,"startDate":"05-03-2026","endDate":"05-03-2028"},"success":true}
+RESP 200 https://atpsv.autolak.in/client/activity/limitCreateTaskFlag
+  {"code":0,"msg":"success","data":{"InnerFlag":false,"SellFlag":true,"OutFlag":true},"success":true}
+REQ GET https://atpsv.autolak.in/client/publish/checkTaskPublishTime?videoLink=https://youtu.be/MzG2LskPtsU
+  HDR {"authorization": "hpFpBg/NJe8SuK5l8PqRhtxAbtomJghgPVBuk/wM6kc=", "identifier": "XWHG968505", "usertype": "publisher", "tguserid": "8196195827", "tgfirstname": "Libbie", "tglastname": "M", "username": "okokok1928ok"}
+  BODY 
+RESP 200 https://atpsv.autolak.in/client/publish/checkTaskPublishTime?videoLink=https://youtu.be/MzG2LskPtsU
+  {"code":0,"msg":"success","data":{"commentsFlag":true,"publishTimeFlag":true,"videoTime":"234"},"success":true}
+REQ POST https://atpsv.autolak.in/client/publish/sendTask
+  HDR {"authorization": "hpFpBg/NJe8SuK5l8PqRhtxAbtomJghgPVBuk/wM6kc=", "identifier": "XWHG968505", "usertype": "publisher", "tguserid": "8196195827", "tgfirstname": "Libbie", "tglastname": "M", "username": "okokok1928ok"}
+  BODY {"totalUser":5,"perUser":2,"plantForm":1,"type":42,"youtubeLink":"https://youtu.be/MzG2LskPtsU","commentNum":1,"endTime":"2026-11-05 21:51:00","redirectFlag":0,"taskEnv":0,"viewFlag":1,"channelName":"","keyWords":"1win promo code"}
+REQ POST https://atpsv.autolak.in/client/user/balance
+  HDR {"authorization": "hpFpBg/NJe8SuK5l8PqRhtxAbtomJghgPVBuk/wM6kc=", "identifier": "XWHG968505", "usertype": "publisher", "tguserid": "8196195827", "tgfirstname": "Libbie", "tglastname": "M", "username": "okokok1928ok"}
+  BODY {"noLoading":true}
+RESP 200 https://atpsv.autolak.in/client/publish/sendTask
+  {"code":0,"msg":"success","data":{"taskId":"e2819cf55b864df19b1c54153f24cb37","showId":"YTSEO4775Взлома","picUrl":"https://i.ytimg.com/vi/MzG2LskPtsU/hqdefault.jpg","endTime":"05-11-2026 09:51 PM","per":2},"success":true}
+RESP 200 https://atpsv.autolak.in/client/user/balance
+  {"code":0,"msg":"success","data":{"balance":3003.00},"success":true}

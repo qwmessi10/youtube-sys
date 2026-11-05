@@ -1,23 +1,33 @@
 # YouTube 内容生成与自动化后台
 
-面向 YouTube 博彩/体育推广场景的内容自动化后台，包含两大系统：
+面向 YouTube 博彩/体育推广场景的**内容自动化流水线**，覆盖「选词 → 做视频 → 上传 → 刷量 → 数据分析」全链路。共六大功能系统 + 一个总览首页：
 
-1. **关键词系统**：输入基础关键词后，通过 YouTube Suggest 发现长尾词，依次调用 SerpApi 与 YouTube Data API V3 获取视频的标题、链接、播放量、点赞、评论、发布时间与频道订阅数据，按规则（或 AI 博彩意图筛选）评分，后台查看并导出 CSV。
-2. **内容生成系统（流程三）**：基于关键词生成 16:9 1080P、最长 4 分钟的三段式长视频——SegA Hook（AI 出 Prompt + 人工上传 mp4）+ SegB 左右分屏画中画（Remotion）+ SegC 尾图呼吸微动（ffmpeg zoompan），叠加 BGM 混音与防封去重。详见下文「内容生成系统（流程三）」。
+| 系统 | 作用 | 后端 app |
+|------|------|---------|
+| **首页** | 总览驾驶舱，聚合各系统关键指标与最近动态（纯查看） | analytics |
+| **数据分析系统** | 视频库数据看板、竞品 SEO 分析、关键词排名追踪 | analytics |
+| **关键词系统** | Suggest 拓词 + SerpApi/V3 补数 + 规则/AI 打分选题 | keywords |
+| **内容生成系统（流程三）** | 三段式长视频生成（Hook + 画中画 + 尾图） | flow3 |
+| **AdsPower 自动化** | 浏览器/IP 管理 + 自动上传视频到 YouTube 草稿 | uploader |
+| **SMM 面板系统** | 刷量任务下单 + 轮询刷量维持 VPH | smm |
 
-> 历史说明：早期曾有流程一（全自动短视频）与流程二（半自动分镜合并），现已下线并从代码库移除；内容生成系统目前仅保留流程三（独立 Django app `flow3`）。
+> 历史说明：早期曾有流程一（全自动短视频）与流程二（半自动分镜合并），现已下线移除；内容生成系统目前仅保留流程三（独立 Django app `flow3`）。
 
-两个系统的任务管理界面均采用统一的**列表式架构**：顶部「新增任务 / 按名称搜索 / 多选批量删除」工具栏，任务列表每行右侧提供操作按钮（详情、下载、日志、控制、删除等），点击「新增任务」进入独立创建界面。
+---
 
 ## 技术栈
 
 - 后端：Python 3.12、Django、Django REST Framework、Gunicorn
-- 异步任务：Celery、Redis
+- 异步任务：Celery、Redis（含 `beat` 定时调度）
 - 数据库：PostgreSQL 16
 - 前端：Vue 3、Vite、Element Plus
 - 视频渲染：Remotion（Node 22 + 无头 Chromium）、ffmpeg
-- AI：moretokens（OpenAI 兼容中转）文本/生图模型、Edge TTS 语音合成
+- AI：moretokens（OpenAI 兼容中转）文本/生图模型、Edge TTS 多语言语音合成
 - 部署：Docker Compose、Nginx
+
+Docker Compose 共 8 个服务：`db` / `redis` / `backend` / `worker` / `beat` / `render` / `uploader` / `frontend`。
+
+---
 
 ## 本地开发
 
@@ -28,7 +38,7 @@
 3. 启动全部服务：`docker compose up --build`。
 4. 打开 `http://localhost:8080`。
 
-首次启动会自动执行数据库迁移。默认 API Key 来自 `.env`，第一次打开“全局设置”时会同步为可编辑的数据库配置；此后以全局设置的保存值为准。
+首次启动会自动执行数据库迁移。默认 API Key 来自 `.env`，第一次打开「全局设置」时会同步为可编辑的数据库配置；此后以全局设置的保存值为准。
 
 开发时修改前端可在 `frontend` 目录执行 `npm install`、`npm run dev`，访问 `http://localhost:5173`；后端仍通过 Docker 运行。若原生运行后端且没有 Redis，可设置 `CELERY_TASK_ALWAYS_EAGER=true`，任务会在请求内执行，仅用于调试。
 
@@ -39,6 +49,8 @@ docker compose config
 docker compose exec backend python manage.py check
 docker compose exec backend python manage.py showmigrations
 ```
+
+---
 
 ## 云服务器部署
 
@@ -55,9 +67,9 @@ docker compose exec backend python manage.py showmigrations
 4. 构建并在后台启动：`docker compose up -d --build`。
 5. 检查状态：`docker compose ps`；查看后台任务日志：`docker compose logs -f worker`。
 
-默认对外端口为 `8080`；后端 `8000` 仅绑定到服务器本机，供 Nginx 和本地调试使用。生产环境建议使用 Caddy、Nginx 或云负载均衡器将域名的 443 HTTPS 流量反代到 `127.0.0.1:8080`，并把 Compose 的前端端口映射改为 `127.0.0.1:8080:80`，避免直接暴露应用端口。
+默认对外端口为 `8080`；后端 `8000` 仅绑定到服务器本机。生产环境建议用 Caddy、Nginx 或云负载均衡器将域名 443 HTTPS 反代到 `127.0.0.1:8080`，并把 Compose 的前端端口映射改为 `127.0.0.1:8080:80`。
 
-升级发布时执行：
+升级发布：
 
 ```bash
 git pull
@@ -65,93 +77,159 @@ docker compose up -d --build
 docker compose exec backend python manage.py migrate
 ```
 
-PostgreSQL 数据由 Docker 卷 `postgres_data` 保存。升级或迁移服务器前先备份：
+PostgreSQL 数据由 Docker 卷 `postgres_data` 保存，升级前先备份：
 
 ```bash
 docker compose exec -T db pg_dump -U youtube_sys youtube_sys > backup.sql
 ```
 
-## 关键词评分规则
+---
 
-每个关键词取前 5 条视频，每个维度最高 5 分，总分最高 20 分；分数越高表示潜在内容空位越大：
+## 首页（总览驾驶舱）
+
+菜单置顶的一级项，**纯查看、不跳转、不做操作**。进入时调用聚合接口 `GET /api/dashboard/summary/` 一次返回：
+
+- **指标卡（4）**：SMM 剩余可用余额、今日出片数、待核对草稿数、进行中任务总数
+- **系统概况（5）**：关键词 / 内容生成 / AdsPower / SMM / 实用工具 各自的总数、进行中、已完成、失败等统计
+- **最近动态（10）**：合并各系统最近记录，按时间倒序展示
+
+---
+
+## 数据分析系统
+
+流水线的「数据反馈」环节，含三个板块（菜单「数据分析系统」下）：
+
+- **视频库**：自动关联 AdsPower 上传的视频（`UploadTask.video_url`）+ 手动添加链接；展示播放/点赞/评论/发布时间，支持单条刷新与指标趋势图。
+- **竞品 SEO 分析**：输入关键词 → 搜 YouTube top N → 逐条拆解标题（长度/关键词位置/数字/emoji）、描述（首行/关键词密度/链接/时间戳）、Tag（数量/长尾/含关键词），并汇总共性洞察。
+- **排名追踪**：维护追踪关键词，定时（频率在全局设置 `ANALYTICS_REFRESH_INTERVAL_MINUTES` 配置）抓取 top N 排名存快照，支持手动抓取与排名趋势图。
+
+数据源复用关键词系统的 SerpApi 搜索 + YouTube V3 补数，技术风险低。
+
+---
+
+## 关键词系统
+
+输入基础关键词 → YouTube Suggest 发现长尾词 → SerpApi 搜索 + YouTube V3 补齐视频/频道/订阅数据 → 规则（或 AI 博彩意图筛选）评分 → 后台查看并导出 CSV。
+
+### 评分规则
+
+每个关键词取前 5 条视频，每个维度最高 5 分，总分最高 20 分（分数越高代表内容空位越大）：
 
 - 标题未完全包含长尾词：每条 +1
 - 频道订阅数低于 2,000：每条 +1
 - 视频播放量低于 5,000：每条 +1
 - 发布时间超过 24 小时：每条 +1
 
-YouTube V3 使用 `videos.list` 和 `channels.list` 批量补齐视频、频道和订阅信息，以避免 SerpApi 搜索结果字段不完整。
+补充说明：
 
-- **输入词也参与评分**：输入词本身会一并纳入待处理列表（排在最前、去重后按最大长尾数截断）。当输入词已很具体、Suggest 拓展不出更多长尾词时，仍能评估输入词本身，不会出现空结果。
-- **数据不全标记人工复核**：当 YouTube V3 未配置或调用失败、或前 5 视频缺少订阅数/播放量/发布时间时，该关键词标记为「数据不全，需人工复核」，不给出可能误导的分数，淘汰阶段记为 `data_incomplete`。
-- **SerpApi 限流防护**：请求按 `SERPAPI_QPS` 节流（默认每秒 1 次），遇 429 或 5xx 按 `SERPAPI_MAX_RETRIES`（默认 2 次）指数退避重试；401 等其他错误不重试以节省额度。这些参数可在「全局设置」中调整。
+- **输入词也参与评分**：输入词本身纳入待处理列表，Suggest 拓不出词时仍能评估输入词本身。
+- **数据不全标记人工复核**：V3 未配置/失败或数据缺失时标记「数据不全」，不给误导分数。
+- **SerpApi 限流防护**：按 `SERPAPI_QPS` 节流（默认 1/s），遇 429/5xx 按 `SERPAPI_MAX_RETRIES` 指数退避重试。参数可在全局设置调整。
+- **任务控制**：暂停（当前查询结束后停止）、停止（立即停止）、重启（续跑未完成项，不重复查询已完成项）。
 
-## 关键词结果查看
+---
 
-- 任务记录和关键词结果均为每页 10 条，支持按基础关键词或长尾关键词搜索。
-- 点击任务记录可筛选对应任务的结果。
-- 展开每条关键词结果可查看前 5 个视频的完整评选依据；标题可直接跳转到 YouTube 视频。
-- CSV 为每个关键词展开 5 组视频字段，包含视频标题、链接、频道、频道订阅数、播放/点赞/评论数与发布时间，方便人工核对。
-- 国家和语言只能从后台提供的候选列表选择；“最大长尾数”默认是 15。
+## 内容生成系统（流程三）
 
-## 任务控制
-
-- **暂停**：当前正在执行的单次 API 查询结束后，任务不再处理下一个关键词；已完成结果保留。
-- **停止**：立即禁止后续关键词处理，已完成结果保留。
-- **重启**：从暂停、停止或失败状态继续处理未完成的关键词，不会重复查询已完成或已记录错误的关键词。
-
-## 流程三：全新三段式长视频
-
-流程三是独立模块（后端 `backend/flow3`，前端菜单「内容生成系统」下的二级项：任务管理 / Agent 管理 / 素材库），单任务产出一个 16:9 1080P 长视频。
+独立模块（后端 `backend/flow3`，菜单「内容生成系统」下：任务管理 / Agent 管理 / 素材库 / 关键词库），单任务产出一个 16:9 1080P 长视频。
 
 ### 成片结构
+
 | 段 | 时间 | 画面 | 生成方式 |
 |---|---|---|---|
-| SegA | 0–7s | Hook 开场 | AI 出视频 Prompt → 人工用外部文生视频引擎生成 mp4 → 回传上传 |
-| SegB | 7s–旁白结束 | 左右分屏画中画：模糊底图 + Promo Code 文字 + 9:16 录屏 | Remotion 渲染，录屏左右位置按随机种子 |
+| SegA | 0–10s | Hook 开场（下载引导） | AI 出视频 Prompt → 人工用外部文生视频引擎生成 mp4 → 回传上传 |
+| SegB | 10s–旁白结束 | 左右分屏画中画：模糊底图 + Promo Code 文字 + 9:16 录屏 | Remotion 渲染，录屏左右位置按随机种子 |
 | SegC | 至总时长 | 尾图 + 呼吸/抖动微动 | AI 生图 → ffmpeg zoompan |
 
-总时长在创建任务时填写；SegC 时长 = 总时长 − 7 − 旁白实际时长。合成后叠加 BGM 混音与像素级防封去重。
+总时长在创建任务时填写；SegC 时长 = 总时长 − 10 − 旁白实际时长。合成后叠加 BGM 混音与像素级防封去重。
 
-### 五个独立 Agent（「流程3 → Agent 管理」可配置提示词）
-- Hook 视频文案 Agent、语音文案 Agent（印度英语旁白）、模糊底图 Agent、尾图 Agent、元数据 Agent
-- 支持 `{PROMO_CODE}` / `{COUNTRY}` / `{EVENT_NAME}` 占位符注入
+### 五个独立 Agent（「Agent 管理」可编辑提示词）
 
-### 素材库（「流程3 → 素材库」）
-- **9:16 手机录屏**：库内保留 1 个，所有任务自动取用
-- **背景音乐 BGM**：可批量上传，任务执行时随机抽取 1 个（种子记录便于复现）
+- **Hook 视频文案 Agent**：10 秒强 Hook，核心为「引导下载 App」（加 Telegram 频道下载 / 搜官网注册），台词按任务语言生成
+- **语音文案 Agent**：多语言旁白（按任务语言），优惠码自然朗读
+- **模糊底图 Agent** / **尾图 Agent**：生图 Prompt
+- **元数据 Agent**：标题 + 结构化描述（首段/正文/章节/关键词堆砌/CTA/#tag，目标 3000–4000 字符）+ 高点击封面提示词
+
+占位符规则：`[input]`=关键词、`[language]`=任务语言、`[keywords]`=关键词库（仅元数据）、`[output]`=输出格式说明；`{PROMO_CODE}` 为全局注入。标题/描述/旁白/Hook 台词均按任务 `language` 参数生成（印地英语、巴西葡语、俄语等）。
+
+> **Agent 提示词的真相源**是 `backend/flow3/prompts/<agent_type>.md` 文件（容器启动 `sync_prompts` 读文件覆盖数据库），改提示词需同步 `.md` 文件与数据库，否则重启回滚。
+
+### 多语言 TTS
+
+Edge TTS 免费合成，音色按任务语言自动映射（巴西葡语 `pt-BR-AntonioNeural`、英语 `en-US-GuyNeural`、俄语 `ru-RU-DmitryNeural`、印度英语 `en-IN-PrabhatNeural` 等 12 种），全局设置 `FLOW3_TTS_VOICE` 可手动覆盖；失败降级 ElevenLabs。
+
+### 素材库
+
+- **9:16 手机录屏**：库内保留，所有任务自动取用
+- **背景音乐 BGM**：批量上传，任务随机抽 1 个（种子记录可复现）
+- **Hook 视频**：批量上传、分组管理、未使用/已使用标签，创建任务时指定或随机取用
+
+### 关键词库
+
+元数据 Agent 描述「关键词堆砌」的数据源，支持 CSV 导入（主词库带搜索量权重 + 长尾词）自动按语言分类，也可手动增删改。
 
 ### 使用流程
-1. 创建任务（填关键词、总时长、优惠码等）→ 系统生成 Hook Prompt，任务暂停等待上传。
+
+1. 创建任务（填关键词、语言、总时长、优惠码等）→ 系统生成 Hook Prompt，任务暂停等待上传。
 2. 用 Hook Prompt 在外部引擎生成 mp4，在任务列表「上传 Hook」后点「继续」。
-3. 系统自动完成：旁白 → 印式 TTS → 模糊底图 → 尾图 → 元数据 → SegB → SegC → 三段合并 → BGM 混音 + 防封。
+3. 系统自动完成：旁白 → 多语言 TTS → 模糊底图 → 尾图 → 元数据 → SegB → SegC → 三段合并 → BGM 混音 + 防封。
 4. 完成后「下载」得到 zip（含 `metadata.txt` + 封面 `cover.jpg` + 成品 `final_video.mp4`）。
 
-> AI Key 与模型在「全局设置」维护（文本模型 `AI_MODEL`、生图模型 `GEMINI_IMAGE_MODEL`、`AI_API_KEY` 等），不写死在代码。AI 调用对偶发断连做自动重试；各生成步骤幂等，重启/续跑不会重复消耗额度。
+> AI Key 与模型在「全局设置」维护，不写死代码；AI 调用对偶发断连自动重试；各步骤幂等，重启/续跑不重复消耗额度。
+
+---
+
+## AdsPower 自动化系统
+
+后端 `backend/uploader`，菜单「AdsPower 自动化系统」下三块：
+
+- **AdsPower 浏览器管理**：管理 AdsPower 浏览器环境（`AdsPowerProfile`）
+- **IP 管理**：代理 IP 池（`ProxyConfig`，含地理位置信息）
+- **任务管理**：自动上传视频到 YouTube（`UploadTask`）——选浏览器环境 → 自动填标题/描述/封面 → 存草稿。状态机 `queued → launching → uploading → draft_saved`（草稿待人工核对发布），上传后回填 `video_url`（供数据分析系统自动关联）。
+
+---
+
+## SMM 面板系统
+
+后端 `backend/smm`，对接第三方 Telegram 刷量面板（AutoLak Cloud），菜单「SMM 面板系统」下：
+
+- **个人中心**：面板账号 CRUD，新增时填 Telegram 数字 ID 自动提取 token 并拉取余额；展示实际余额 / 锁定中 / 剩余可用。
+- **任务管理**：
+  - **普通刷量任务**：填 YouTube 链接、关键词、人数等提交下单，状态/进度从面板同步，完成后标记。
+  - **轮询刷量任务**：维持 VPH——首次刷量 + 窗口内每小时自动刷随机人数（可跨天直到刷满轮询次数），按最大估算成本锁定余额，支持停止/重启。
+
+数据更新走纯 HTTP 直连（不依赖浏览器），认证靠 `tgUserId` 换取 token。定时同步任务 `sync_smm_task_statuses`（有未完成任务时 30s 一次）与轮询调度 `sync_smm_poll_tasks`（每分钟）。
+
+---
 
 ## 当前接口
 
-关键词系统：
-- `POST /api/keyword-runs/`：创建关键词任务
-- `GET /api/keyword-runs/`：查询任务
-- `DELETE /api/keyword-runs/<id>/`：删除任务（结果级联删除）
-- `POST /api/keyword-runs/bulk_delete/`：批量删除（body: `{"ids": [...]}`）
-- `POST /api/keyword-runs/<id>/{pause,stop,restart}/`：任务控制
-- `GET /api/keyword-results/?run=<id>`：查询关键词结果
-- `GET /api/keyword-results/export/?run=<id>`：导出 CSV
-- `GET/PUT /api/settings/`：读取和修改全局 API、AI 配置
+**关键词系统**（`/api/` 前缀，下同）：
+- `POST/GET/DELETE keyword-runs/`、`keyword-runs/bulk_delete/`、`keyword-runs/<id>/{pause,stop,restart}/`
+- `GET keyword-results/?run=<id>`、`keyword-results/export/?run=<id>`
+- `GET/PUT settings/`（全局设置）
+- `suggest-expansions/`（长尾词拓展工具）、`agent-prompts/`
 
-内容生成系统（流程三）：
-- `POST /api/flow3-runs/`：创建任务（出 Hook Prompt 后暂停）
-- `POST /api/flow3-runs/<id>/upload_hook/`：上传 Hook 视频
-- `POST /api/flow3-runs/<id>/resume/`：继续执行 Step4~7
-- `POST /api/flow3-runs/<id>/{pause,stop,restart}/`：任务控制
-- `DELETE /api/flow3-runs/<id>/`：删除任务（清理关联媒体文件）
-- `POST /api/flow3-runs/bulk_delete/`：批量删除（body: `{"ids": [...]}`）
-- `GET /api/flow3-runs/<id>/log/`：工作日志
-- `GET /api/flow3-runs/<id>/package/`：下载成品 zip
-- `/api/flow3-agents/`、`/api/flow3-materials/`：Agent 管理与素材库
+**内容生成系统（流程三）**：
+- `flow3-runs/`（创建/列表/删除，`upload_hook`、`resume`、`retry`、`pause`、`stop`、`restart`、`log`、`package` 等 action）
+- `flow3-agents/`（含 `run_once` 试运行、`default_prompt`、`models`）
+- `flow3-materials/`、`flow3-material-groups/`
+- `flow3-keywords/`（关键词库，含 `import_csv` 导入）
+
+**AdsPower 自动化**：
+- `adspower-profiles/`、`adspower-proxies/`、`upload-tasks/`
+
+**SMM 面板**：
+- `smm-accounts/`（含 `refresh`、`refresh_ua`）、`smm-tasks/`（含 `sync_status`）、`smm-poll-tasks/`（含 `stop`、`restart`）
+
+**数据分析系统 + 首页**：
+- `dashboard/summary/`（首页聚合）
+- `analytics-videos/`（含 `sync`、`refresh`、`snapshots`）
+- `analytics-competitor/`（含 `analyze`）
+- `analytics-rank-trackings/`（含 `capture`、`snapshots`）
+
+---
 
 ## Git
 
-远程仓库已配置为：`git@github.com:qwmessi10/youtube-sys.git`。
+远程仓库：`git@github.com:qwmessi10/youtube-sys.git`。

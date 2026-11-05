@@ -35,7 +35,7 @@ from .services import (
     _generate_image_prompt,
 )
 
-SEG_A_SECONDS = 7  # SegA Hook 固定 7 秒
+SEG_A_SECONDS = 10  # SegA Hook 固定 10 秒（文生视频已支持 10s，成片时长据此计算）
 # SegB 旁白分段：固定 1 段，时长按 TTS 实际音频决定（这里仅给 AI 生成文案的目标段长）。
 SEGB_TARGET_SHOT_COUNT = 3
 SEGB_TARGET_SHOT_DURATION = 7

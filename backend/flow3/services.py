@@ -157,31 +157,35 @@ def _extract_json(text):
 # {PROMO_CODE}/{COUNTRY}/{EVENT_NAME} 为全局变量注入；[output]=固定输出格式说明。
 # ===========================================================================
 DEFAULT_HOOK_PROMPT = """# 角色
-你是一位务实的品牌推广视频编导，服务于面向南亚（印度）市场的平台推广。
-你擅长写克制、可信、有官方感的开场 Hook，而不是浮夸的大奖炫技画面。
+你是一位深谙「前 3 秒抓注意力」的视频开场编导，专做面向南亚（印度）市场的博彩/优惠码推广视频 Hook。你的开场要让人一眼就停下来看，绝不官方、绝不平淡。
 
 # 目标
-根据给定的关键词和优惠码，生成一段约 7-8 秒 Hook 视频的「文生视频」英文 Prompt，
-用于外部 AI 视频生成引擎（如 Runway/Kling/Sora 类）渲染开场画面。
+根据关键词和优惠码，生成一段约 10 秒 Hook 视频的「文生视频」Prompt，用于外部 AI 视频引擎（Runway/Kling/Sora 类）渲染开场。
+这 10 秒的核心信息是「引导用户下载 App」：告诉还没下载的人——加主页 Telegram 频道下载，或直接搜官网域名注册下载。
 
-# 风格要求（重要）
-- 官方、务实、可信，像平台官方公告或正规教程的开场，不要浮夸奢华、不要满屏金币/烟花/爆炸。
-- 南亚（印度）本地化：真实的印度日常/城市/居家或手机操作场景，普通印度人物，自然光线，纪实感。
-- 画面干净、克制、专业；镜头平稳（轻微推进或手持感即可），不要炫技运镜。
-- 必须与关键词强相关：围绕「[input]」所指的平台/产品/操作主题来构图。
-- 必须自然体现优惠码 {PROMO_CODE}：可以让优惠码以简洁的屏幕文字/界面输入框/卡片形式出现在画面中（清晰可读），不夸张。
-- 若优惠码为空则不强行展示优惠码。
+# 核心台词（务必在视频里自然传达，口播 + 醒目字幕都要有）
+大意：「还没下载 App？赶紧加主页 Telegram 频道下载，或者直接搜官网注册下载，别错过！」
+- 台词必须用 [language] 语言（任务配置什么语言就说什么语言）。
+- 口播节奏要快、有紧迫感，10 秒内干净利落地讲完这句引导。
+- 具体 App 名称 / 官网域名以关键词 [input] 为准（如「1win」则说 1win app、搜 1win.com）。
+
+# 风格要求（强 hook）
+- 开场 0-2 秒就用「问题 / 悬念 / 大额奖金数字 / 金钱利益」抓住眼球（如直接发问、甩出 +500% 奖金、或"还没下载？"的急迫感）。
+- 强吸引力、高能量、口语化，像本地博主喊话，有煽动力。
+- 画面配合台词：手机屏幕展示 App 下载/注册页、Telegram 频道图标、官网网址特写等，字幕大字清晰可读。
+- 印度本地化：真实印度年轻人/手机操作场景，兴奋的表情和手势，自然但有活力。
+- 若优惠码 {PROMO_CODE} 非空，自然带出（字幕或口播提一句），不喧宾夺主。
 
 # 输入
 关键词：[input]
-国家：{COUNTRY}
+语言：[language]
 优惠码：{PROMO_CODE}
 
 # 输出
 [output]"""
 
 HOOK_OUTPUT_SPEC = """严格只输出一个 JSON 对象，不要输出任何解释文字或 markdown 代码块标记，格式如下：
-{"video_prompt": "用于外部 AI 视频引擎的英文提示词（一段连贯描述，含画面、运镜、风格、时长约8秒）"}"""
+{"video_prompt": "用于外部 AI 视频引擎的提示词（一段连贯描述，含画面、运镜、口播台词、字幕、风格，时长约10秒）"}"""
 
 DEFAULT_NARRATION_PROMPT = """# 角色
 你是一位务实、可信的印度英语口播文案师，语气像正规教程/官方介绍，不浮夸。
@@ -423,11 +427,14 @@ def _agent_model(agent):
 # 各 Agent 文案生成
 # ===========================================================================
 def generate_hook_prompt(run):
-    """Hook 文案 Agent → 产出外部视频引擎用的英文 video_prompt。返回 (prompt_text, log)。"""
+    """Hook 文案 Agent → 产出外部视频引擎用的 video_prompt。返回 (prompt_text, log)。"""
     prompt, agent = _get_prompt(Flow3Agent.AGENT_HOOK)
     if prompt is None:
         raise RuntimeError("Hook 视频文案 Agent 已停用")
-    full = _inject_globals(prompt, run).replace("[input]", run.keyword).replace("[output]", HOOK_OUTPUT_SPEC)
+    full = (_inject_globals(prompt, run)
+            .replace("[input]", run.keyword)
+            .replace("[language]", language_display(run.language))
+            .replace("[output]", HOOK_OUTPUT_SPEC))
     model = _agent_model(agent)
     raw = _call_ai_stream([{"role": "user", "content": full}], model=model)
     data = _extract_json(raw)

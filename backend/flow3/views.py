@@ -484,6 +484,12 @@ class KeywordLibraryViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin,
         search = self.request.query_params.get("search", "").strip()
         if search:
             qs = qs.filter(keyword__icontains=search)
+        # 排序：order 参数，如 search_volume / -search_volume（白名单防注入）
+        order = self.request.query_params.get("order", "").strip()
+        if order:
+            field = order.lstrip("-")
+            if field in ("search_volume", "keyword", "created_at", "updated_at", "id"):
+                qs = qs.order_by(order)
         return qs
 
     def perform_create(self, serializer):
@@ -497,9 +503,11 @@ class KeywordLibraryViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin,
     @action(detail=False, methods=["post"], parser_classes=[MultiPartParser, FormParser])
     def import_csv(self, request):
         """
-        导入关键词库 CSV。
-        - source=primary：两列「关键词,搜索量」，第一列关键词、第二列搜索量权重。
-        - source=suggest：两列「序号,长尾关键词」，第二列为长尾词。
+        导入关键词库 CSV（批量，支持去重更新权重 + 跨库迁移）。
+        - source=primary：两列「关键词,搜索量」，第二列为搜索量权重。
+        - source=suggest：两列「序号,长尾关键词」，第二列为长尾词；可选第三列为权重。
+        归属规则：权重 > 0 归主词库(primary)，权重 = 0/空 归长尾词库(suggest)。
+        已存在同库 → 更新权重；已存在异库 → 迁移（删旧记录、按新归属重建）。
         """
         source = (request.data.get("source") or "primary").strip()
         if source not in dict(KeywordLibrary.SOURCE_CHOICES):
@@ -510,29 +518,61 @@ class KeywordLibraryViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin,
 
         content = f.read().decode("utf-8-sig", errors="replace")  # utf-8-sig 兼容 BOM
         rows = list(csv.reader(io.StringIO(content)))
-        created = skipped = 0
+        created = updated = migrated = skipped = 0
         for row in rows[1:]:  # 跳过表头
             if not row or not any(c.strip() for c in row):
                 continue
             if source == KeywordLibrary.SOURCE_PRIMARY:
                 keyword = (row[0] or "").strip()
                 vol_raw = (row[1] or "").strip() if len(row) > 1 else "0"
-                try:
-                    search_volume = int(vol_raw.replace(",", ""))
-                except ValueError:
-                    search_volume = 0
-            else:  # suggest：第二列是长尾词
+            else:  # suggest：第二列是长尾词，第三列可选权重
                 keyword = (row[1] or "").strip() if len(row) > 1 else (row[0] or "").strip()
-                search_volume = 0
+                vol_raw = (row[2] or "").strip() if len(row) > 2 else "0"
             if not keyword:
                 continue
-            if KeywordLibrary.objects.filter(source=source, keyword=keyword).exists():
-                skipped += 1
-                continue
-            KeywordLibrary.objects.create(
-                keyword=keyword, search_volume=search_volume,
-                language=detect_keyword_language(keyword), source=source,
-            )
-            created += 1
-        return Response({"detail": f"导入完成：新增 {created} 个，跳过 {skipped} 个（重复或空行）。",
-                         "created": created, "skipped": skipped})
+            try:
+                search_volume = int(vol_raw.replace(",", ""))
+            except ValueError:
+                search_volume = 0
+
+            # 权重决定归属：>0 主词库，=0 长尾词库
+            target_source = KeywordLibrary.SOURCE_PRIMARY if search_volume > 0 else KeywordLibrary.SOURCE_SUGGEST
+
+            existing = KeywordLibrary.objects.filter(keyword=keyword).first()
+            if existing is None:
+                KeywordLibrary.objects.create(
+                    keyword=keyword, search_volume=search_volume,
+                    language=detect_keyword_language(keyword), source=target_source,
+                )
+                created += 1
+            elif existing.source == target_source:
+                # 同库：更新权重（无变化则跳过）
+                if existing.search_volume != search_volume:
+                    existing.search_volume = search_volume
+                    existing.save(update_fields=["search_volume", "updated_at"])
+                    updated += 1
+                else:
+                    skipped += 1
+            else:
+                # 跨库迁移：删除旧记录，按新归属重建
+                existing.delete()
+                KeywordLibrary.objects.create(
+                    keyword=keyword, search_volume=search_volume,
+                    language=detect_keyword_language(keyword), source=target_source,
+                )
+                migrated += 1
+        return Response({
+            "detail": f"导入完成：新增 {created}，更新权重 {updated}，跨库迁移 {migrated}，跳过 {skipped}。",
+            "created": created, "updated": updated, "migrated": migrated, "skipped": skipped,
+        })
+
+    @action(detail=False, methods=["post"])
+    def bulk_delete(self, request):
+        """批量删除关键词。参数：ids=[1,2,3]。"""
+        ids = request.data.get("ids") or []
+        if not isinstance(ids, list) or not ids:
+            return Response({"detail": "请提供要删除的关键词 id 列表。"}, status=status.HTTP_400_BAD_REQUEST)
+        qs = KeywordLibrary.objects.filter(id__in=ids)
+        count = qs.count()
+        qs.delete()
+        return Response({"detail": f"已删除 {count} 个关键词。", "deleted": count})

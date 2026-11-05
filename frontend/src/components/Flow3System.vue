@@ -55,13 +55,21 @@ const agentRunResult = ref({});  // { [agentId]: 产出 }
 const agentRunning = ref({});    // { [agentId]: bool }
 
 // —— 素材库 ——
+const materialTab = ref("hook");  // 当前素材 Tab：hook / screen_record / bgm
 const screenMaterials = ref([]);
 const bgmMaterials = ref([]);
 const hookMaterials = ref([]);
+const screenTotal = ref(0), screenPage = ref(1);
+const bgmTotal = ref(0), bgmPage = ref(1);
+const hookTotal = ref(0), hookPage = ref(1);
 const selectedHookIds = ref([]);
 const selectedScreenIds = ref([]);
+const selectedBgmIds = ref([]);
 const materialLoading = ref(false);
 const tagLabel = (t) => (t === "used" ? "已使用" : "未使用");
+// 任务创建下拉（独立于素材库分页列表，避免分页只取一页）
+const hookOptions = ref([]);
+const screenOptions = ref([]);
 
 // —— Hook 分组 ——
 const groups = ref([]);
@@ -81,7 +89,7 @@ const agentDrawerResult = ref(null);
 // 当前所选 hook 分组的可用（未使用）数量，供批量上限提示
 function groupUnusedCount(groupId) {
   const g = groups.value.find((x) => x.id === groupId);
-  return g ? (g.unused_count || 0) : hookMaterials.value.filter((h) => h.tag === "unused").length;
+  return g ? (g.unused_count || 0) : hookOptions.value.filter((h) => h.tag === "unused").length;
 }
 
 // —— 详情 / Hook 上传 / 日志 ——
@@ -377,24 +385,24 @@ async function deleteGroup(g) {
 }
 
 // ================= 素材库 =================
-async function loadMaterials() {
+async function loadMaterials(type = materialTab.value, page = 1) {
   materialLoading.value = true;
   try {
-    const hookParams = { type: "hook", page_size: 500 };
-    if (currentGroupFilter.value) hookParams.group = currentGroupFilter.value;
-    const [s, b, h] = await Promise.all([
-      axios.get("/api/flow3-materials/", { params: { type: "screen_record", page_size: 100 } }),
-      axios.get("/api/flow3-materials/", { params: { type: "bgm", page_size: 100 } }),
-      axios.get("/api/flow3-materials/", { params: hookParams }),
-    ]);
-    screenMaterials.value = s.data.results || s.data;
-    bgmMaterials.value = b.data.results || b.data;
-    hookMaterials.value = h.data.results || h.data;
+    const params = { type, page, page_size: 20 };
+    if (type === "hook" && currentGroupFilter.value) params.group = currentGroupFilter.value;
+    const { data } = await axios.get("/api/flow3-materials/", { params });
+    if (type === "screen_record") { screenMaterials.value = data.results; screenTotal.value = data.count; screenPage.value = page; }
+    else if (type === "bgm") { bgmMaterials.value = data.results; bgmTotal.value = data.count; bgmPage.value = page; }
+    else { hookMaterials.value = data.results; hookTotal.value = data.count; hookPage.value = page; }
   } catch {
     ElMessage.error("加载素材失败");
   } finally {
     materialLoading.value = false;
   }
+}
+function onMaterialTabChange(tab) {
+  materialTab.value = tab;
+  loadMaterials(tab, 1);
 }
 // 单个上传（录屏/BGM 沿用）
 async function uploadMaterial(type, uploadFile) {
@@ -447,6 +455,21 @@ async function bulkDeleteScreen() {
     await axios.post("/api/flow3-materials/bulk_delete/", { ids: selectedScreenIds.value });
     ElMessage.success("已删除");
     selectedScreenIds.value = [];
+    await loadMaterials();
+  } catch (e) {
+    if (e !== "cancel") ElMessage.error(e.response?.data?.detail || "删除失败");
+  }
+}
+function onBgmSelectionChange(rows) {
+  selectedBgmIds.value = rows.map((r) => r.id);
+}
+async function bulkDeleteBgm() {
+  if (!selectedBgmIds.value.length) return ElMessage.warning("请先勾选要删除的 BGM 素材");
+  try {
+    await ElMessageBox.confirm(`确定删除选中的 ${selectedBgmIds.value.length} 个 BGM 素材？`, "确认删除", { type: "warning" });
+    await axios.post("/api/flow3-materials/bulk_delete/", { ids: selectedBgmIds.value });
+    ElMessage.success("已删除");
+    selectedBgmIds.value = [];
     await loadMaterials();
   } catch (e) {
     if (e !== "cancel") ElMessage.error(e.response?.data?.detail || "删除失败");
@@ -519,20 +542,20 @@ async function deleteMaterial(m) {
 async function loadHookOptions() {
   try {
     const { data } = await axios.get("/api/flow3-materials/", { params: { type: "hook", page_size: 500 } });
-    hookMaterials.value = data.results || data;
+    hookOptions.value = data.results || data;
   } catch { /* 忽略 */ }
 }
 // 任务创建时加载录屏素材供下拉选择
 async function loadScreenOptions() {
   try {
     const { data } = await axios.get("/api/flow3-materials/", { params: { type: "screen_record", page_size: 200 } });
-    screenMaterials.value = data.results || data;
+    screenOptions.value = data.results || data;
   } catch { /* 忽略 */ }
 }
 // 创建界面：按所选分组过滤可选 hook 素材（单选模式用）
 function hookOptionsInGroup() {
-  if (!form.value.hook_group) return hookMaterials.value;
-  return hookMaterials.value.filter((h) => h.group === form.value.hook_group);
+  if (!form.value.hook_group) return hookOptions.value;
+  return hookOptions.value.filter((h) => h.group === form.value.hook_group);
 }
 
 // ================= 重试 =================
@@ -598,6 +621,8 @@ const kwImporting = ref(false);
 const kwAddDialog = ref(false);
 const kwSaving = ref(false);
 const kwForm = ref({ keyword: "", search_volume: 0, language: "en", source: "primary" });
+const kwSelectedIds = ref([]);
+const kwOrder = ref("");  // 后端排序字段，如 search_volume / -search_volume
 
 const kwLangOptions = [
   { value: "en", label: "英语" }, { value: "pt", label: "葡萄牙语" },
@@ -618,6 +643,7 @@ async function loadKeywords(page = kwPage.value) {
     if (kwFilter.value.language) params.language = kwFilter.value.language;
     if (kwFilter.value.source) params.source = kwFilter.value.source;
     if (kwFilter.value.search) params.search = kwFilter.value.search;
+    if (kwOrder.value) params.order = kwOrder.value;
     const { data } = await axios.get("/api/flow3-keywords/", { params });
     keywords.value = data.results;
     kwTotal.value = data.count;
@@ -702,6 +728,28 @@ async function deleteKeyword(row) {
   } catch (e) {
     if (e !== "cancel") ElMessage.error("删除失败");
   }
+}
+
+function onKwSelectionChange(rows) {
+  kwSelectedIds.value = rows.map((r) => r.id);
+}
+async function bulkDeleteKeywords() {
+  if (!kwSelectedIds.value.length) return ElMessage.warning("请先勾选要删除的关键词");
+  try {
+    await ElMessageBox.confirm(`确定删除选中的 ${kwSelectedIds.value.length} 个关键词？此操作不可恢复。`, "确认删除", { type: "warning" });
+    await axios.post("/api/flow3-keywords/bulk_delete/", { ids: kwSelectedIds.value });
+    ElMessage.success("已删除");
+    kwSelectedIds.value = [];
+    await loadKeywords();
+  } catch (e) {
+    if (e !== "cancel") ElMessage.error(e.response?.data?.detail || "删除失败");
+  }
+}
+function onKwSortChange({ prop, order }) {
+  // el-table 自定义排序：ascending → prop，descending → -prop，null → 默认
+  if (!order) kwOrder.value = "";
+  else kwOrder.value = (order === "ascending" ? "" : "-") + prop;
+  loadKeywords(1);
 }
 
 // 首次 + 切换 view 时按需加载
@@ -789,7 +837,7 @@ onUnmounted(() => stopPoll());
           </el-form-item>
           <el-form-item label="录屏素材">
             <el-select v-model="form.screen_material" clearable filterable placeholder="不选=随机取一个启用的录屏" style="width: 360px">
-              <el-option v-for="s in screenMaterials" :key="s.id" :label="s.name || ('录屏#'+s.id)" :value="s.id" />
+              <el-option v-for="s in screenOptions" :key="s.id" :label="s.name || ('录屏#'+s.id)" :value="s.id" />
             </el-select>
           </el-form-item>
           <el-form-item label="Hook 分组" required>
@@ -878,100 +926,115 @@ onUnmounted(() => stopPoll());
   <!-- ============ 素材库 ============ -->
   <div v-else-if="view === 'flow3-materials'">
     <el-alert title="流程3 素材库" description="Hook 视频：可批量上传 mp4，带「未使用/已使用」标签；创建任务时可指定或随机取未使用素材。9:16 录屏：库内保留 1 个，所有任务自动取用。BGM：可批量上传，任务执行时随机抽 1 个。" type="success" :closable="false" show-icon class="flow3-intro" />
-    <div v-loading="materialLoading">
-      <!-- Hook 视频库 -->
-      <el-card shadow="never" class="table-card">
-        <template #header>
-          <div class="card-title">
-            <strong>Hook 视频</strong>
-            <div class="toolbar-left">
-              <span class="form-hint">分组筛选：</span>
-              <el-select v-model="currentGroupFilter" clearable placeholder="全部分组" size="small" style="width: 160px" @change="loadMaterials">
-                <el-option v-for="g in groups" :key="g.id" :label="`${g.name}(${g.material_count||0})`" :value="g.id" />
-              </el-select>
-              <el-button size="small" @click="openGroupNew">新建分组</el-button>
-              <el-button size="small" :disabled="!selectedHookIds.length" @click="openMoveDialog">移动到分组{{ selectedHookIds.length ? `(${selectedHookIds.length})` : '' }}</el-button>
-              <el-button type="danger" plain size="small" :disabled="!selectedHookIds.length" @click="bulkDeleteHook">删除{{ selectedHookIds.length ? `(${selectedHookIds.length})` : '' }}</el-button>
-              <span class="form-hint" style="margin-left:8px">上传到：</span>
-              <el-select v-model="uploadGroup" clearable placeholder="默认分组" size="small" style="width: 150px">
+    <el-tabs v-model="materialTab" v-loading="materialLoading" @tab-change="onMaterialTabChange">
+      <!-- Hook 视频 -->
+      <el-tab-pane label="Hook 视频" name="hook">
+        <el-card shadow="never" class="table-card">
+          <template #header>
+            <div class="card-title">
+              <div class="toolbar-left">
+                <span class="form-hint">分组筛选：</span>
+                <el-select v-model="currentGroupFilter" clearable placeholder="全部分组" size="small" style="width: 160px" @change="() => loadMaterials('hook', 1)">
+                  <el-option v-for="g in groups" :key="g.id" :label="`${g.name}(${g.material_count||0})`" :value="g.id" />
+                </el-select>
+                <el-button size="small" @click="openGroupNew">新建分组</el-button>
+                <el-button size="small" :disabled="!selectedHookIds.length" @click="openMoveDialog">移动到分组{{ selectedHookIds.length ? `(${selectedHookIds.length})` : '' }}</el-button>
+                <el-button type="danger" plain size="small" :disabled="!selectedHookIds.length" @click="bulkDeleteHook">删除{{ selectedHookIds.length ? `(${selectedHookIds.length})` : '' }}</el-button>
+                <span class="form-hint" style="margin-left:8px">上传到：</span>
+                <el-select v-model="uploadGroup" clearable placeholder="默认分组" size="small" style="width: 150px">
+                  <el-option v-for="g in groups" :key="g.id" :label="g.name" :value="g.id" />
+                </el-select>
+                <el-upload :auto-upload="true" :show-file-list="false" accept="video/*" :multiple="true" :http-request="({ file }) => batchUploadHook({ raw: file, name: file.name })">
+                  <el-button type="primary" size="small">批量上传 Hook</el-button>
+                </el-upload>
+              </div>
+            </div>
+            <!-- 分组管理行 -->
+            <div class="group-chips">
+              <el-tag v-for="g in groups" :key="g.id" :type="g.is_default ? 'info' : 'primary'" effect="plain"
+                :closable="!g.is_default" size="small" class="group-chip"
+                @close="deleteGroup(g)" @click="!g.is_default && openGroupEdit(g)">
+                {{ g.name }}（{{ g.material_count || 0 }}，可用 {{ g.unused_count || 0 }}）
+              </el-tag>
+            </div>
+          </template>
+          <el-table :data="hookMaterials" size="small" empty-text="暂无 Hook 素材" @selection-change="onHookSelectionChange">
+            <el-table-column type="selection" width="44" />
+            <el-table-column prop="name" label="名称" min-width="180" />
+            <el-table-column label="分组" width="150"><template #default="{ row }">
+              <el-select :model-value="row.group" size="small" style="width: 130px" placeholder="默认分组" @change="(v) => updateHookGroup(row, v)">
                 <el-option v-for="g in groups" :key="g.id" :label="g.name" :value="g.id" />
               </el-select>
-              <el-upload :auto-upload="true" :show-file-list="false" accept="video/*" :multiple="true" :http-request="({ file }) => batchUploadHook({ raw: file, name: file.name })">
-                <el-button type="primary" size="small">批量上传 Hook</el-button>
+            </template></el-table-column>
+            <el-table-column label="时长" width="90"><template #default="{ row }">{{ row.duration ? row.duration + 's' : '—' }}</template></el-table-column>
+            <el-table-column label="标签" width="140"><template #default="{ row }">
+              <el-select :model-value="row.tag" size="small" style="width: 100px" @change="(v) => updateHookTag(row, v)">
+                <el-option label="未使用" value="unused" />
+                <el-option label="已使用" value="used" />
+              </el-select>
+            </template></el-table-column>
+            <el-table-column label="预览" width="80"><template #default="{ row }"><a v-if="row.file_url" :href="row.file_url" target="_blank">查看</a></template></el-table-column>
+            <el-table-column label="操作" width="90"><template #default="{ row }"><el-button size="small" type="danger" plain @click="deleteMaterial(row)">删除</el-button></template></el-table-column>
+          </el-table>
+          <el-pagination v-model:current-page="hookPage" class="pagination" layout="total, prev, pager, next" :page-size="20" :total="hookTotal" @current-change="(p) => loadMaterials('hook', p)" />
+        </el-card>
+      </el-tab-pane>
+
+      <!-- 9:16 录屏 -->
+      <el-tab-pane label="9:16 手机录屏" name="screen_record">
+        <el-card shadow="never" class="table-card">
+          <template #header><div class="card-title">
+            <div class="toolbar-left">
+              <el-button type="danger" plain size="small" :disabled="!selectedScreenIds.length" @click="bulkDeleteScreen">删除{{ selectedScreenIds.length ? `(${selectedScreenIds.length})` : '' }}</el-button>
+              <el-upload :auto-upload="true" :show-file-list="false" accept="video/*" :multiple="true" :http-request="({ file }) => batchUploadScreen({ raw: file, name: file.name })">
+                <el-button type="primary" size="small">批量上传录屏</el-button>
               </el-upload>
             </div>
-          </div>
-          <!-- 分组管理行 -->
-          <div class="group-chips">
-            <el-tag v-for="g in groups" :key="g.id" :type="g.is_default ? 'info' : 'primary'" effect="plain"
-              :closable="!g.is_default" size="small" class="group-chip"
-              @close="deleteGroup(g)" @click="!g.is_default && openGroupEdit(g)">
-              {{ g.name }}（{{ g.material_count || 0 }}，可用 {{ g.unused_count || 0 }}）
-            </el-tag>
-          </div>
-        </template>
-        <el-table :data="hookMaterials" size="small" empty-text="暂无 Hook 素材" @selection-change="onHookSelectionChange">
-          <el-table-column type="selection" width="44" />
-          <el-table-column prop="name" label="名称" min-width="180" />
-          <el-table-column label="分组" width="150"><template #default="{ row }">
-            <el-select :model-value="row.group" size="small" style="width: 130px" placeholder="默认分组" @change="(v) => updateHookGroup(row, v)">
-              <el-option v-for="g in groups" :key="g.id" :label="g.name" :value="g.id" />
-            </el-select>
-          </template></el-table-column>
-          <el-table-column label="时长" width="90"><template #default="{ row }">{{ row.duration ? row.duration + 's' : '—' }}</template></el-table-column>
-          <el-table-column label="标签" width="140"><template #default="{ row }">
-            <el-select :model-value="row.tag" size="small" style="width: 100px" @change="(v) => updateHookTag(row, v)">
-              <el-option label="未使用" value="unused" />
-              <el-option label="已使用" value="used" />
-            </el-select>
-          </template></el-table-column>
-          <el-table-column label="预览" width="80"><template #default="{ row }"><a v-if="row.file_url" :href="row.file_url" target="_blank">查看</a></template></el-table-column>
-          <el-table-column label="操作" width="90"><template #default="{ row }"><el-button size="small" type="danger" plain @click="deleteMaterial(row)">删除</el-button></template></el-table-column>
-        </el-table>
-      </el-card>
+          </div></template>
+          <el-table :data="screenMaterials" size="small" empty-text="暂无录屏素材" @selection-change="onScreenSelectionChange">
+            <el-table-column type="selection" width="44" />
+            <el-table-column prop="name" label="名称" min-width="200" />
+            <el-table-column label="时长" width="100"><template #default="{ row }">{{ row.duration ? row.duration + 's' : '—' }}</template></el-table-column>
+            <el-table-column label="预览" width="90"><template #default="{ row }"><a v-if="row.file_url" :href="row.file_url" target="_blank">查看</a></template></el-table-column>
+            <el-table-column label="启用" width="80"><template #default="{ row }"><el-tag size="small" :type="row.enabled ? 'success' : 'info'">{{ row.enabled ? '启用' : '停用' }}</el-tag></template></el-table-column>
+            <el-table-column label="操作" width="100"><template #default="{ row }"><el-button size="small" type="danger" plain @click="deleteMaterial(row)">删除</el-button></template></el-table-column>
+          </el-table>
+          <el-pagination v-model:current-page="screenPage" class="pagination" layout="total, prev, pager, next" :page-size="20" :total="screenTotal" @current-change="(p) => loadMaterials('screen_record', p)" />
+        </el-card>
+      </el-tab-pane>
 
-      <el-card shadow="never" class="table-card">
-        <template #header><div class="card-title"><strong>9:16 手机录屏</strong>
-          <div class="toolbar-left">
-            <el-button type="danger" plain size="small" :disabled="!selectedScreenIds.length" @click="bulkDeleteScreen">删除{{ selectedScreenIds.length ? `(${selectedScreenIds.length})` : '' }}</el-button>
-            <el-upload :auto-upload="true" :show-file-list="false" accept="video/*" :multiple="true" :http-request="({ file }) => batchUploadScreen({ raw: file, name: file.name })">
-              <el-button type="primary" size="small">批量上传录屏</el-button>
-            </el-upload>
-          </div>
-        </div></template>
-        <el-table :data="screenMaterials" size="small" empty-text="暂无录屏素材" @selection-change="onScreenSelectionChange">
-          <el-table-column type="selection" width="44" />
-          <el-table-column prop="name" label="名称" min-width="200" />
-          <el-table-column label="时长" width="100"><template #default="{ row }">{{ row.duration ? row.duration + 's' : '—' }}</template></el-table-column>
-          <el-table-column label="预览" width="90"><template #default="{ row }"><a v-if="row.file_url" :href="row.file_url" target="_blank">查看</a></template></el-table-column>
-          <el-table-column label="启用" width="80"><template #default="{ row }"><el-tag size="small" :type="row.enabled ? 'success' : 'info'">{{ row.enabled ? '启用' : '停用' }}</el-tag></template></el-table-column>
-          <el-table-column label="操作" width="100"><template #default="{ row }"><el-button size="small" type="danger" plain @click="deleteMaterial(row)">删除</el-button></template></el-table-column>
-        </el-table>
-      </el-card>
-
-      <el-card shadow="never" class="table-card">
-        <template #header><div class="card-title"><strong>背景音乐 BGM</strong>
-          <el-upload :auto-upload="true" :show-file-list="false" accept="audio/*" :multiple="true" :http-request="({ file }) => uploadMaterial('bgm', { raw: file, name: file.name })">
-            <el-button type="primary" size="small">批量上传 BGM</el-button>
-          </el-upload>
-        </div></template>
-        <el-table :data="bgmMaterials" size="small" empty-text="暂无 BGM 素材">
-          <el-table-column prop="name" label="名称" min-width="200" />
-          <el-table-column label="时长" width="100"><template #default="{ row }">{{ row.duration ? row.duration + 's' : '—' }}</template></el-table-column>
-          <el-table-column label="试听" width="90"><template #default="{ row }"><a v-if="row.file_url" :href="row.file_url" target="_blank">播放</a></template></el-table-column>
-          <el-table-column label="启用" width="80"><template #default="{ row }"><el-tag size="small" :type="row.enabled ? 'success' : 'info'">{{ row.enabled ? '启用' : '停用' }}</el-tag></template></el-table-column>
-          <el-table-column label="操作" width="100"><template #default="{ row }"><el-button size="small" type="danger" plain @click="deleteMaterial(row)">删除</el-button></template></el-table-column>
-        </el-table>
-      </el-card>
-    </div>
-    </div>
-    <div v-else-if="view === 'flow3-keywords'">
+      <!-- BGM -->
+      <el-tab-pane label="背景音乐 BGM" name="bgm">
+        <el-card shadow="never" class="table-card">
+          <template #header><div class="card-title">
+            <div class="toolbar-left">
+              <el-button type="danger" plain size="small" :disabled="!selectedBgmIds.length" @click="bulkDeleteBgm">删除{{ selectedBgmIds.length ? `(${selectedBgmIds.length})` : '' }}</el-button>
+              <el-upload :auto-upload="true" :show-file-list="false" accept="audio/*" :multiple="true" :http-request="({ file }) => uploadMaterial('bgm', { raw: file, name: file.name })">
+                <el-button type="primary" size="small">批量上传 BGM</el-button>
+              </el-upload>
+            </div>
+          </div></template>
+          <el-table :data="bgmMaterials" size="small" empty-text="暂无 BGM 素材" @selection-change="onBgmSelectionChange">
+            <el-table-column type="selection" width="44" />
+            <el-table-column prop="name" label="名称" min-width="200" />
+            <el-table-column label="时长" width="100"><template #default="{ row }">{{ row.duration ? row.duration + 's' : '—' }}</template></el-table-column>
+            <el-table-column label="试听" width="90"><template #default="{ row }"><a v-if="row.file_url" :href="row.file_url" target="_blank">播放</a></template></el-table-column>
+            <el-table-column label="启用" width="80"><template #default="{ row }"><el-tag size="small" :type="row.enabled ? 'success' : 'info'">{{ row.enabled ? '启用' : '停用' }}</el-tag></template></el-table-column>
+            <el-table-column label="操作" width="100"><template #default="{ row }"><el-button size="small" type="danger" plain @click="deleteMaterial(row)">删除</el-button></template></el-table-column>
+          </el-table>
+          <el-pagination v-model:current-page="bgmPage" class="pagination" layout="total, prev, pager, next" :page-size="20" :total="bgmTotal" @current-change="(p) => loadMaterials('bgm', p)" />
+        </el-card>
+      </el-tab-pane>
+    </el-tabs>
+  </div>
+  <div v-else-if="view === 'flow3-keywords'">
       <el-alert title="关键词库" description="元数据 Agent 生成视频描述时的关键词堆砌数据源。主词库按搜索量优先写入，长尾词用于补充；导入 CSV 时自动按语言分类。" type="success" :closable="false" show-icon class="flow3-intro" />
       <el-card shadow="never" class="toolbar-card">
         <div class="toolbar">
           <div class="toolbar-left">
             <el-button type="primary" @click="openKwAdd">手动添加</el-button>
             <el-button @click="openKwImport">导入 CSV</el-button>
+            <el-button type="danger" plain :disabled="!kwSelectedIds.length" @click="bulkDeleteKeywords">删除{{ kwSelectedIds.length ? `(${kwSelectedIds.length})` : '' }}</el-button>
           </div>
           <div class="toolbar-right">
             <el-select v-model="kwFilter.language" clearable placeholder="语言" style="width: 130px" @change="loadKeywords(1)">
@@ -987,9 +1050,10 @@ onUnmounted(() => stopPoll());
         </div>
       </el-card>
       <el-card shadow="never" class="table-card">
-        <el-table :data="keywords" size="small" v-loading="kwLoading" empty-text="暂无关键词，点「导入 CSV」或「手动添加」">
+        <el-table :data="keywords" size="small" v-loading="kwLoading" empty-text="暂无关键词，点「导入 CSV」或「手动添加」" @selection-change="onKwSelectionChange" @sort-change="onKwSortChange">
+          <el-table-column type="selection" width="44" />
           <el-table-column prop="keyword" label="关键词" min-width="200" show-overflow-tooltip />
-          <el-table-column label="搜索量" width="100" sortable><template #default="{ row }">{{ row.search_volume || '—' }}</template></el-table-column>
+          <el-table-column label="搜索量" width="110" prop="search_volume" sortable="custom"><template #default="{ row }">{{ row.search_volume || '—' }}</template></el-table-column>
           <el-table-column label="语言" width="140">
             <template #default="{ row }">
               <el-select v-model="row.language" size="small" @change="changeKwLanguage(row, row.language)">
@@ -1011,13 +1075,13 @@ onUnmounted(() => stopPoll());
       <el-form-item label="来源">
         <el-radio-group v-model="kwImportSource">
           <el-radio value="primary">主词库（关键词,搜索量）</el-radio>
-          <el-radio value="suggest">长尾词（序号,长尾词）</el-radio>
+          <el-radio value="suggest">长尾词（序号,长尾词[,权重]）</el-radio>
         </el-radio-group>
       </el-form-item>
       <el-form-item label="CSV 文件">
         <el-upload :auto-upload="false" :limit="1" accept=".csv" :on-change="onKwFileChange" :on-remove="() => (kwImportFile = null)">
           <el-button>选择文件</el-button>
-          <template #tip><div class="form-hint">主词库两列「关键词,搜索量」；长尾词两列「序号,长尾关键词」。导入时自动按语言分类。</div></template>
+          <template #tip><div class="form-hint">主词库两列「关键词,搜索量」；长尾词两列「序号,长尾词」，可加第三列权重。重复关键词自动更新权重；带权重进主词库、无权重进长尾词库，跨库自动迁移。</div></template>
         </el-upload>
       </el-form-item>
     </el-form>

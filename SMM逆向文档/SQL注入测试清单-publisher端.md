@@ -1,8 +1,8 @@
 # SQL 注入测试清单 —— publisher 端（小程序）
 
-> 适用对象：AutoLak Cloud 小程序后端 `https://atpsv.autolak.in/client`  
+> 适用对象：内部 AutoLak Cloud 小程序后端 `https://atpsv.autolak.in/client`  
 > 目的：系统化排查 publisher 端各接口是否存在 SQL 注入  
-> 原则：本人未推广项目，在推广前进行安全确认。官方**测试靶场，已授权攻击测试行为**
+> 原则：官方**测试靶场，已授权攻击测试行为**
 
 ---
 

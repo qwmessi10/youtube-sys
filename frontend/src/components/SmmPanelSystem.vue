@@ -368,6 +368,33 @@ function togglePollChildren(row) {
   pollExpanded.value = pollExpanded.value === row.id ? null : row.id;
 }
 
+// —— 任务详情（视频实时统计：浏览量/点赞/评论，走 YouTube API）——
+const detailDialog = ref(false);
+const detailLoading = ref(false);
+const detailData = ref(null);
+
+async function loadStats(url) {
+  detailDialog.value = true;
+  detailLoading.value = true;
+  detailData.value = null;
+  try {
+    const { data } = await axios.get(url);
+    detailData.value = data;
+  } catch (e) {
+    ElMessage.error(e.response?.data?.detail || "查询失败");
+    detailDialog.value = false;
+  } finally {
+    detailLoading.value = false;
+  }
+}
+function openTaskDetail(row) {
+  loadStats(`/api/smm-tasks/${row.id}/stats/`);
+}
+function openPollTaskDetail(row) {
+  loadStats(`/api/smm-poll-tasks/${row.id}/stats/`);
+}
+const fmtNum = (n) => (n == null ? "—" : Number(n).toLocaleString());
+
 watch(() => props.view, (v) => {
   loadAccounts();  // 账号列表个人中心/任务管理都要用，始终加载
   if (v === "smm-tasks") { loadTasks(); loadPollTasks(); }
@@ -461,7 +488,8 @@ onMounted(() => {
         <el-table-column label="成本" width="90"><template #default="{ row }">₹{{ row.cost }}</template></el-table-column>
         <el-table-column label="状态" width="100"><template #default="{ row }"><el-tag size="small" :type="statusType(row.status)" effect="light">{{ statusLabel(row.status) }}</el-tag></template></el-table-column>
         <el-table-column label="进度" width="140"><template #default="{ row }">{{ progressText(row) }}</template></el-table-column>
-        <el-table-column label="操作" width="200" fixed="right"><template #default="{ row }">
+        <el-table-column label="操作" width="260" fixed="right"><template #default="{ row }">
+          <el-button size="small" plain @click="openTaskDetail(row)">详情</el-button>
           <el-button size="small" type="primary" plain :loading="syncingId === row.id" @click="syncTask(row)">同步</el-button>
           <el-button size="small" type="danger" plain @click="deleteTask(row)">删除</el-button>
         </template></el-table-column>
@@ -527,7 +555,8 @@ onMounted(() => {
             <el-table-column label="窗口(北京)" width="110"><template #default="{ row }">{{ row.window_start_hour }}:00-{{ row.window_end_hour }}:00</template></el-table-column>
             <el-table-column label="下次执行" width="140"><template #default="{ row }">{{ row.next_poll_at ? fmtSlot(new Date(row.next_poll_at)) : "—" }}</template></el-table-column>
             <el-table-column label="状态" width="100"><template #default="{ row }"><el-tag size="small" :type="pollStatusMeta[row.status]?.type || 'info'" effect="light">{{ pollStatusMeta[row.status]?.label || row.status }}</el-tag></template></el-table-column>
-            <el-table-column label="操作" width="220" fixed="right"><template #default="{ row }">
+            <el-table-column label="操作" width="280" fixed="right"><template #default="{ row }">
+              <el-button size="small" plain @click="openPollTaskDetail(row)">详情</el-button>
               <el-button v-if="row.status === 'running'" size="small" type="warning" plain @click="stopPollTask(row)">停止</el-button>
               <el-button v-else size="small" type="success" plain @click="restartPollTask(row)">重启</el-button>
               <el-button size="small" type="danger" plain @click="deletePollTask(row)">删除</el-button>
@@ -583,5 +612,21 @@ onMounted(() => {
         </el-dialog>
       </el-tab-pane>
     </el-tabs>
+
+    <el-dialog v-model="detailDialog" title="任务详情" width="520px">
+      <div v-loading="detailLoading">
+        <template v-if="detailData">
+          <el-descriptions :column="1" border>
+            <el-descriptions-item label="视频标题">{{ detailData.title || "—" }}</el-descriptions-item>
+            <el-descriptions-item label="任务链接">
+              <a :href="detailData.youtube_link" target="_blank" style="color:#409eff">{{ detailData.youtube_link }}</a>
+            </el-descriptions-item>
+            <el-descriptions-item label="浏览量">{{ fmtNum(detailData.view_count) }}</el-descriptions-item>
+            <el-descriptions-item label="点赞数">{{ fmtNum(detailData.like_count) }}</el-descriptions-item>
+            <el-descriptions-item label="评论数">{{ fmtNum(detailData.comment_count) }}</el-descriptions-item>
+          </el-descriptions>
+        </template>
+      </div>
+    </el-dialog>
   </div>
 </template>

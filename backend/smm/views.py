@@ -12,7 +12,9 @@ from .serializers import SMMAccountSerializer, SMMPollTaskSerializer, SMMTaskSer
 from .services import (
     LATEST_CHROME_UA,
     POLL_END_HOURS,
+    extract_video_id,
     get_balance,
+    get_video_stats,
     map_panel_status,
     next_slot_after,
     publish_telegram_auth,
@@ -37,6 +39,20 @@ def clean_keywords(raw):
     parts = [p.strip() for p in (raw or "").split(";")]
     cleaned = [p for p in parts if p]
     return ";".join(cleaned), len(cleaned) != len(parts)
+
+
+def _video_stats_response(youtube_link):
+    """从任务链接查 YouTube 实时统计（浏览量/点赞/评论），返回统一 Response。纯读，不碰面板。"""
+    video_id = extract_video_id(youtube_link)
+    if not video_id:
+        return Response({"detail": "无法从链接解析出视频 ID"}, status=status.HTTP_400_BAD_REQUEST)
+    stats = get_video_stats(video_id)
+    if stats is None:
+        return Response(
+            {"detail": "查询失败（未配置 YOUTUBE_API_KEY，或视频不存在 / 接口异常）"},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    return Response({"youtube_link": youtube_link, **stats})
 
 
 class TenPerPagePagination(PageNumberPagination):
@@ -253,6 +269,12 @@ class SMMTaskViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin,
         task.refresh_from_db()
         return Response(SMMTaskSerializer(task).data)
 
+    @action(detail=True, methods=["get"])
+    def stats(self, request, pk=None):
+        """查任务视频的实时统计（浏览量/点赞/评论）。纯读接口。"""
+        task = self.get_object()
+        return _video_stats_response(task.youtube_link)
+
 
 def sync_task_from_panel(task):
     """同步单个任务（供 view 与 Celery 复用）。成功返回 True，面板无此任务返回 False，异常返回 None。"""
@@ -415,3 +437,9 @@ class SMMPollTaskViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin,
         pt.fail_count = 0
         pt.save()
         return Response(SMMPollTaskSerializer(pt).data)
+
+    @action(detail=True, methods=["get"])
+    def stats(self, request, pk=None):
+        """查轮询任务视频的实时统计（浏览量/点赞/评论）。纯读接口，不影响调度。"""
+        pt = self.get_object()
+        return _video_stats_response(pt.youtube_link)

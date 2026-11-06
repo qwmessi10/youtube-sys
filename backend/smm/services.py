@@ -7,6 +7,7 @@
 """
 import json
 import os
+import re
 import urllib.error
 import urllib.request
 from datetime import datetime, timedelta, timezone
@@ -135,3 +136,61 @@ def next_slot_after(after_dt, start_hour, end_hour):
     while not (start_hour <= candidate.hour < end_hour):
         candidate += timedelta(hours=1)
     return candidate
+
+
+# ===========================================================================
+# YouTube 视频统计（任务详情用，纯读，不碰 AutoLak 面板、不影响调度）
+# ===========================================================================
+def extract_video_id(url):
+    """从 YouTube 链接提取 11 位 video_id。支持 youtu.be / watch?v= / shorts / embed / live / 纯 ID。"""
+    if not url:
+        return ""
+    url = url.strip()
+    m = re.search(r"youtu\.be/([A-Za-z0-9_-]{11})", url)
+    if m:
+        return m.group(1)
+    m = re.search(r"(?:[?&]v=|/shorts/|/embed/|/live/|youtube\.com/v/)([A-Za-z0-9_-]{11})", url)
+    if m:
+        return m.group(1)
+    m = re.search(r"^([A-Za-z0-9_-]{11})$", url)
+    if m:
+        return m.group(1)
+    return ""
+
+
+def get_video_stats(video_id):
+    """YouTube Data API V3 查单个视频的统计（viewCount/likeCount/commentCount + 标题）。
+
+    未配置 YOUTUBE_API_KEY、视频不存在或接口异常时返回 None。
+    """
+    import requests
+    key = get_setting("YOUTUBE_API_KEY", "")
+    if not key or not video_id:
+        return None
+    try:
+        resp = requests.get(
+            "https://www.googleapis.com/youtube/v3/videos",
+            params={"part": "statistics,snippet", "id": video_id, "key": key},
+            timeout=20,
+        )
+        resp.raise_for_status()
+        items = resp.json().get("items") or []
+        if not items:
+            return None
+        item = items[0]
+        stats = item.get("statistics") or {}
+        snippet = item.get("snippet") or {}
+
+        def _int(k):
+            v = stats.get(k)
+            return int(v) if isinstance(v, str) and v.isdigit() else None
+
+        return {
+            "video_id": video_id,
+            "title": snippet.get("title") or "",
+            "view_count": _int("viewCount"),
+            "like_count": _int("likeCount"),
+            "comment_count": _int("commentCount"),
+        }
+    except Exception:
+        return None

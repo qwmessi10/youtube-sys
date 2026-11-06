@@ -110,7 +110,10 @@ async function syncProfiles() {
   syncing.value = true;
   try {
     const { data } = await axios.post("/api/adspower-profiles/sync/");
-    ElMessage.success(`已同步 ${data.synced} 个浏览器环境`);
+    let msg = `已同步 ${data.synced} 个浏览器环境`;
+    if (data.deleted) msg += `，删除 ${data.deleted} 个（客户端已删）`;
+    if (data.kept) msg += `，保留 ${data.kept} 个（被任务引用）`;
+    ElMessage.success(msg);
     await loadProfiles(1);
     setTimeout(loadGroups, 1200);   // 错开 AdsPower 每秒限频
   } catch (e) {

@@ -370,5 +370,16 @@ def sync_profiles():
             break
         page += 1
 
+    # 删除本地多余（客户端已删）的环境；被上传任务引用的保留（PROTECT 保护）。
+    from .models import UploadTask
+    deleted, kept = 0, 0
+    if total > 0:  # 本次至少拉到 1 个环境才做删除，防止客户端异常返回空导致全量误删
+        for prof in AdsPowerProfile.objects.exclude(user_id__in=seen_ids):
+            if UploadTask.objects.filter(profile=prof).exists():
+                kept += 1
+                continue
+            prof.delete()
+            deleted += 1
+
     groups = list_groups().get("list") or []
-    return {"synced": total, "groups": len(groups)}
+    return {"synced": total, "groups": len(groups), "deleted": deleted, "kept": kept}

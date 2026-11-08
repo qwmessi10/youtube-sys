@@ -62,8 +62,8 @@ class SMMPollTaskSerializer(serializers.ModelSerializer):
             "youtube_link", "key_words", "per_user", "task_type", "plant_form", "comment_num",
             "initial_count", "poll_total", "poll_done", "batch_min", "batch_max",
             "window_start_hour", "window_end_hour", "status", "status_label",
-            "next_poll_at", "fail_count", "children", "created_at", "updated_at",
+            "next_poll_at", "fail_count", "last_error", "children", "created_at", "updated_at",
         ]
         read_only_fields = [
-            "poll_done", "status", "next_poll_at", "fail_count", "children",
+            "poll_done", "status", "next_poll_at", "fail_count", "last_error", "children",
         ]

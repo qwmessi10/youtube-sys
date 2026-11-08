@@ -119,6 +119,7 @@ class SMMPollTask(models.Model):
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default=STATUS_RUNNING, verbose_name="状态")
     next_poll_at = models.DateTimeField(null=True, blank=True, verbose_name="下次执行时间")
     fail_count = models.IntegerField(default=0, verbose_name="连续失败次数")
+    last_error = models.TextField(blank=True, default="", verbose_name="最近失败原因")
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

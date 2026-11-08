@@ -106,11 +106,13 @@ def sync_smm_poll_tasks():
             )
             pt.poll_done += 1
             pt.fail_count = 0
+            pt.last_error = ""
         else:
             pt.fail_count += 1
+            pt.last_error = str(res.get("msg") or res)
             if pt.fail_count >= 3:
                 pt.status = SMMPollTask.STATUS_FAILED
-                pt.save(update_fields=["status", "fail_count", "updated_at"])
+                pt.save(update_fields=["status", "fail_count", "last_error", "updated_at"])
                 continue
 
         # 推进到当前时间之后的下一个窗口内整点（跳过漏掉的时段，不做补刷）

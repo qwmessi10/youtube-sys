@@ -554,7 +554,12 @@ onMounted(() => {
             <el-table-column label="每批人数" width="90"><template #default="{ row }">{{ row.batch_min }}-{{ row.batch_max }}</template></el-table-column>
             <el-table-column label="窗口(北京)" width="110"><template #default="{ row }">{{ row.window_start_hour }}:00-{{ row.window_end_hour }}:00</template></el-table-column>
             <el-table-column label="下次执行" width="140"><template #default="{ row }">{{ row.next_poll_at ? fmtSlot(new Date(row.next_poll_at)) : "—" }}</template></el-table-column>
-            <el-table-column label="状态" width="100"><template #default="{ row }"><el-tag size="small" :type="pollStatusMeta[row.status]?.type || 'info'" effect="light">{{ pollStatusMeta[row.status]?.label || row.status }}</el-tag></template></el-table-column>
+            <el-table-column label="状态" width="120"><template #default="{ row }">
+              <el-tooltip v-if="row.status === 'failed' && row.last_error" :content="row.last_error" placement="top">
+                <el-tag size="small" :type="pollStatusMeta[row.status]?.type || 'info'" effect="light">{{ pollStatusMeta[row.status]?.label || row.status }}</el-tag>
+              </el-tooltip>
+              <el-tag v-else size="small" :type="pollStatusMeta[row.status]?.type || 'info'" effect="light">{{ pollStatusMeta[row.status]?.label || row.status }}</el-tag>
+            </template></el-table-column>
             <el-table-column label="操作" width="280" fixed="right"><template #default="{ row }">
               <el-button size="small" plain @click="openPollTaskDetail(row)">详情</el-button>
               <el-button v-if="row.status === 'running'" size="small" type="warning" plain @click="stopPollTask(row)">停止</el-button>
